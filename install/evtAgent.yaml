@@ -1,0 +1,84 @@
+---
+
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: eviction-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eviction-agent
+subjects:
+- kind: ServiceAccount
+  name: eviction-agent
+  namespace: kube-system
+
+---
+
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: eviction-agent
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  resources:
+  - nodes
+  - namespaces
+  - pods
+  verbs:
+  - watch
+  - list
+  - update
+  - get
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eviction-agent
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+
+---
+
+kind: DaemonSet
+apiVersion: extensions/v1beta1
+metadata:
+  name: eviction-agent
+  namespace: kube-system
+  labels:
+    k8s-app: eviction-agent
+spec:
+  selector:
+    matchLabels:
+      k8s-app: eviction-agent
+  template:
+    metadata:
+      labels:
+        k8s-app: eviction-agent
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: eviction-agent
+      containers:
+        - name: eviction-agent
+          image: eviction-agent:latest
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-log
+            readOnly: false
+      volumes:
+        - name: tmp-log
+          hostPath:
+            path: /tmp
