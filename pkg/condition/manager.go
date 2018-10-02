@@ -32,8 +32,33 @@ func NewConditionManager(client evictionclient.Client, clock clock.Clock) Condit
 
 func (c *conditionManager) Start() {
 	glog.Infof("Start condition manager\n")
+	err := c.client.SetTaintConditions("DiskIO", "Taint")
+	if err != nil {
+		glog.Errorf("taint node error %v", err)
+	}
 	for {
 		time.Sleep(30 * time.Second)
-		c.client.GetTaintConditions()
+		taint, err := c.client.GetTaintConditions("DiskIO")
+		if err != nil {
+			glog.Errorf("get taint error %v", err)
+			continue
+		}
+		if taint {
+			break
+		}
+	}
+	time.Sleep(100 * time.Second)
+	err = c.client.SetTaintConditions("DiskIO", "UnTaint")
+	if err != nil {
+		glog.Errorf("untaint node error %v", err)
+	}
+	for {
+		time.Sleep(30 * time.Second)
+		taint, err := c.client.GetTaintConditions("DiskIO")
+		if err != nil {
+			glog.Errorf("get taint error %v", err)
+			continue
+		}
+		glog.Infof("get DiskIO taint %v", taint)
 	}
 }

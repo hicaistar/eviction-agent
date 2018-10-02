@@ -32,6 +32,7 @@ rules:
   - list
   - update
   - get
+  - patch
 
 ---
 
