@@ -68,7 +68,7 @@ spec:
         - name: eviction-agent
           image: eviction-agent:latest
           env:
-            - name: MY_NODE_NAME
+            - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
