@@ -1,10 +1,10 @@
 package evictionmanager
 
 import (
-	"k8s.io/apimachinery/pkg/util/clock"
-
 	"eviction-agent/pkg/evictionclient"
 	"eviction-agent/pkg/condition"
+
+	"k8s.io/apimachinery/pkg/util/clock"
 )
 
 type EvictionManager interface {
@@ -17,15 +17,18 @@ type evictionManager struct {
 }
 
 // NewEvictionManager creates the eviction manager.
-func NewEvictionManager(client evictionclient.Client) EvictionManager {
+func NewEvictionManager(client evictionclient.Client, configFile string) EvictionManager {
 	return &evictionManager{
 		client: client,
-		conditionManager: condition.NewConditionManager(client, clock.RealClock{}),
+		conditionManager: condition.NewConditionManager(client, clock.RealClock{}, configFile),
 	}
 }
 
 // Run starts the eviction manager
 func (e *evictionManager) Run() error {
-	e.conditionManager.Start()
+	err := e.conditionManager.Start()
+	if err != nil {
+		return err
+	}
 	return nil
 }

@@ -19,11 +19,12 @@ func main() {
 
 	eao := options.NewEvictionAgentOptions()
 	eao.SetNodeNameOrDie()
+	eao.SetPolicyConfigFileOrDie()
 
 	glog.Infof("Start to run eviction agent on %v...\n", eao.NodeName)
 
 	c := evictionclient.NewClientOrDie(eao)
-	e := evictionmanager.NewEvictionManager(c)
+	e := evictionmanager.NewEvictionManager(c, eao.PolicyConfigFile)
 
 	if err := e.Run(); err != nil {
 		glog.Fatalf("Eviction agent failed with error: %v", err)

@@ -9,7 +9,7 @@ type EvictionAgentOptions struct {
 	// command line options
 
 	// PolicyConfigPath specifies the path to taint policy configuration file.
-	PolicyConfigPath string
+	PolicyConfigFile string
 	// KubeconfigFile specifies the path to kubeconfig file.
 	KubeconfigFile string
 	// NodeName is the node name used to communicate with Kubernetes ApiServer.
@@ -28,5 +28,12 @@ func (eao *EvictionAgentOptions) SetNodeNameOrDie() {
 	eao.NodeName = os.Getenv("NODE_NAME")
 	if eao.NodeName == "" {
 		panic(fmt.Errorf("Failed to get node name from environment"))
+	}
+}
+
+func (eao *EvictionAgentOptions) SetPolicyConfigFileOrDie() {
+	eao.PolicyConfigFile = os.Getenv("POLICY_CONFIG_FILE")
+	if eao.PolicyConfigFile == "" {
+		panic(fmt.Errorf("Failed to get policy configuration file"))
 	}
 }
