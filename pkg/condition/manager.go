@@ -111,7 +111,7 @@ func (c *conditionManager) loadPolicyConfig() error {
 func (c *conditionManager) syncStats() {
 	glog.Infof("start sync stats\n")
 	for {
-		time.Sleep(30 * time.Second)
-		glog.Infof("get grace period: %v", c.untaintGracePeriod)
+		time.Sleep(20 * time.Second)
+		c.client.GetSummaryStats()
 	}
 }

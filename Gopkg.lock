@@ -387,6 +387,14 @@
   pruneopts = "UT"
   revision = "9dfdf9be683f61f82cda12362c44c784e0778b56"
 
+[[projects]]
+  digest = "1:7c4176f7acf270159ef141d057d6cb4c9a41faed37dc64999f47c89f0629ba60"
+  name = "k8s.io/kubernetes"
+  packages = ["pkg/kubelet/apis/stats/v1alpha1"]
+  pruneopts = "UT"
+  revision = "0ed33881dc4355495f623c6f22e7dd0b7632b7c0"
+  version = "v1.12.0"
+
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
@@ -401,6 +409,7 @@
     "k8s.io/client-go/kubernetes",
     "k8s.io/client-go/rest",
     "k8s.io/client-go/tools/clientcmd",
+    "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1

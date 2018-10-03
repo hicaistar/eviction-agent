@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"eviction-agent/cmd/options"
+	"eviction-agent/pkg/summary"
 )
 
 // Client is the interface of eviction client
@@ -31,6 +32,8 @@ type evictionClient struct {
 	nodeName string
 	client   *kubernetes.Clientset
 	clock    clock.Clock
+	nodeInfo summary.NodeInfo
+	summaryApi summary.SummaryStatsApi
 }
 
 // NewClientOrDie creates a new eviction client, panics if error occurs.
@@ -62,7 +65,43 @@ func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
 	c.client = clientSet
 	c.nodeName = eao.NodeName
 
+	ipAddr, err := c.getNodeAddress()
+	if err != nil {
+		glog.Errorf("%v", err)
+		panic(err)
+	}
+
+	transport, err := rest.TransportFor(config)
+	if err != nil {
+		glog.Errorf("get transport error: %v", err)
+		panic(err)
+	}
+
+	c.nodeInfo = summary.NodeInfo{
+		Name: c.nodeName,
+		Port: 10255,  // get port from node?
+		ConnectAddress: ipAddr,
+	}
+
+	// NewSummaryStatsApi
+	c.summaryApi, err = summary.NewSummaryStatsApi(transport, c.nodeInfo)
+
 	return c
+}
+
+func (c *evictionClient) getNodeAddress() (string, error) {
+	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
+	if err != nil {
+		glog.Errorf("get node taint condition error %v", err)
+		return "", err
+	}
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == v1.NodeInternalIP {
+			glog.Infof("get node ip address: %v", addr.Address)
+			return addr.Address, nil
+		}
+	}
+	return "", fmt.Errorf("node had no addresses that matched\n")
 }
 
 func (c *evictionClient) GetTaintConditions(taintKey string) (bool, error) {
@@ -126,5 +165,5 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 }
 
 func (c *evictionClient) GetSummaryStats() {
-
+	c.summaryApi.GetSummaryStats()
 }
