@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	policyv1 "k8s.io/api/policy/v1beta1"
 
 	"eviction-agent/cmd/options"
 	"eviction-agent/pkg/summary"
@@ -25,7 +26,9 @@ type Client interface {
 	// SetTaintConditions set or update taint conditions of current node
 	SetTaintConditions(string, string) (error)
 	// GetSummaryStats get node/pod stats from summary API
-	GetSummaryStats()
+	GetSummaryStats() (*summary.ConditionStats, error)
+	// EvictOnePod evict one pod
+	EvictOnePodByName(string, string) (error)
 }
 
 type evictionClient struct {
@@ -164,6 +167,22 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 	return err
 }
 
-func (c *evictionClient) GetSummaryStats() {
-	c.summaryApi.GetSummaryStats()
+func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error){
+	stats, err := c.summaryApi.GetSummaryStats()
+	return stats, err
+}
+
+// EvictOnePodByName
+func (c *evictionClient) EvictOnePodByName(podName string, namespace string) error {
+	eviction := policyv1.Eviction{
+		TypeMeta: metav1.TypeMeta{
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: podName,
+			Namespace: namespace,
+		},
+		DeleteOptions: &metav1.DeleteOptions{},
+	}
+	err := c.client.CoreV1().Pods(namespace).Evict(&eviction)
+	return err
 }

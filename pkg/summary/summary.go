@@ -12,6 +12,7 @@ import (
 	"github.com/golang/glog"
 
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
+	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 )
 
 type NodeInfo struct {
@@ -20,22 +21,25 @@ type NodeInfo struct {
 	Port           int
 }
 
+type ConditionStats struct {
+	NodeNetStats *statsapi.NetworkStats
+	PodStats     []statsapi.PodStats
+}
+
+type NodeCondition struct {
+	DiskIOAvailable    bool
+	NetworkIOAvailabel bool
+}
+
 type SummaryStatsApi interface {
-	GetSummaryStats()
+	GetSummaryStats() (*ConditionStats, error)
 }
 
 type kubeletClient struct {
-	port int
-	host string  // Connect address
+	port   int
+	host   string  // Connect address
 	client *http.Client
-}
-
-type ErrNotFound struct {
-	endpoint string
-}
-
-func (err *ErrNotFound) Error() string {
-	return fmt.Sprintf("%q not found", err.endpoint)
+	stats  ConditionStats
 }
 
 func NewSummaryStatsApi(transport http.RoundTripper, nodeInfo NodeInfo) (SummaryStatsApi, error) {
@@ -49,8 +53,9 @@ func NewSummaryStatsApi(transport http.RoundTripper, nodeInfo NodeInfo) (Summary
 	}, nil
 }
 
-func (kc *kubeletClient) GetSummaryStats() {
-	kc.collect()
+func (kc *kubeletClient) GetSummaryStats() (*ConditionStats, error) {
+	err := kc.collect()
+	return &kc.stats, err
 }
 
 func (kc *kubeletClient) collect() error {
@@ -60,6 +65,8 @@ func (kc *kubeletClient) collect() error {
 		return err
 	}
 	glog.Infof("Get summary node name: %v", summary.Node.NodeName)
+	kc.stats.NodeNetStats = summary.Node.Network
+	kc.stats.PodStats = summary.Pods
 	return nil
 }
 
@@ -74,7 +81,7 @@ func (kc *kubeletClient) makeRequestAndGetValue(client *http.Client, req *http.R
 		return fmt.Errorf("failed to read response body - %v", err)
 	}
 	if response.StatusCode == http.StatusNotFound {
-		return &ErrNotFound{req.URL.String()}
+		return fmt.Errorf("request not found: %v", req.URL.String())
 	} else if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("request failed - %q, response: %q", response.Status, string(body))
 	}

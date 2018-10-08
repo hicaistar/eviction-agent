@@ -27,12 +27,14 @@ rules:
   - nodes
   - namespaces
   - pods
+  - pods/evictions
   verbs:
   - watch
   - list
   - update
   - get
   - patch
+  - create
 
 ---
 
