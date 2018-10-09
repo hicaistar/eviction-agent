@@ -10,25 +10,26 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 
 	"eviction-agent/cmd/options"
 	"eviction-agent/pkg/summary"
+	"eviction-agent/pkg/types"
 )
 
 // Client is the interface of eviction client
 type Client interface {
 	// GetTaintConditions get all specific taint conditions of current node
-	GetTaintConditions(string) (bool, error)
+	GetTaintConditions() (bool, bool, error)
 	// SetTaintConditions set or update taint conditions of current node
 	SetTaintConditions(string, string) (error)
 	// GetSummaryStats get node/pod stats from summary API
 	GetSummaryStats() (*summary.ConditionStats, error)
 	// EvictOnePod evict one pod
-	EvictOnePodByName(string, string) (error)
+	EvictOnePod(*types.PodInfo) (error)
 }
 
 type evictionClient struct {
@@ -100,26 +101,33 @@ func (c *evictionClient) getNodeAddress() (string, error) {
 	}
 	for _, addr := range node.Status.Addresses {
 		if addr.Type == v1.NodeInternalIP {
-			glog.Infof("get node ip address: %v", addr.Address)
+			glog.Infof("Get node ip address: %v", addr.Address)
 			return addr.Address, nil
 		}
 	}
 	return "", fmt.Errorf("node had no addresses that matched\n")
 }
 
-func (c *evictionClient) GetTaintConditions(taintKey string) (bool, error) {
+func (c *evictionClient) GetTaintConditions() (bool, bool, error) {
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
 		glog.Errorf("get node taint condition error %v", err)
-		return false, err
+		return false, false, err
 	}
 	taints := node.Spec.Taints
+	nodeTaintInfo := types.NodeTaintInfo{
+		DiskIO:    false,
+		NetworkIO: false,
+	}
 	for _, t := range taints {
-		if taintKey == t.Key {
-			return true, nil
+		if t.Key == types.NetworkIO {
+			nodeTaintInfo.NetworkIO = true
+		}
+		if t.Key == types.DiskIO {
+			nodeTaintInfo.DiskIO = true
 		}
 	}
-	return false, nil
+	return nodeTaintInfo.NetworkIO, nodeTaintInfo.DiskIO, nil
 }
 
 func (c* evictionClient) SetTaintConditions(taintKey string, action string) error {
@@ -163,7 +171,7 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 		return fmt.Errorf("failed to create pathc for node %v", c.nodeName)
 	}
 
-	_, err = c.client.CoreV1().Nodes().Patch(c.nodeName, types.StrategicMergePatchType, patchBytes)
+	_, err = c.client.CoreV1().Nodes().Patch(c.nodeName, k8stypes.StrategicMergePatchType, patchBytes)
 	return err
 }
 
@@ -173,16 +181,16 @@ func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error){
 }
 
 // EvictOnePodByName
-func (c *evictionClient) EvictOnePodByName(podName string, namespace string) error {
+func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
 	eviction := policyv1.Eviction{
 		TypeMeta: metav1.TypeMeta{
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: podName,
-			Namespace: namespace,
+			Name: podToEvict.Name,
+			Namespace: podToEvict.Namespace,
 		},
 		DeleteOptions: &metav1.DeleteOptions{},
 	}
-	err := c.client.CoreV1().Pods(namespace).Evict(&eviction)
+	err := c.client.CoreV1().Pods(eviction.Namespace).Evict(&eviction)
 	return err
 }

@@ -15,4 +15,6 @@ FROM scratch
 
 COPY --from=builder /bin/eviction-agent /
 
-CMD /eviction-agent --v=4 --stderrthreshold="info"
+ENTRYPOINT ["/eviction-agent"]
+
+#  --v=4 --stderrthreshold=info

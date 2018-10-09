@@ -17,18 +17,13 @@ import (
 
 type NodeInfo struct {
 	Name           string
-	ConnectAddress string
 	Port           int
+	ConnectAddress string
 }
 
 type ConditionStats struct {
 	NodeNetStats *statsapi.NetworkStats
 	PodStats     []statsapi.PodStats
-}
-
-type NodeCondition struct {
-	DiskIOAvailable    bool
-	NetworkIOAvailabel bool
 }
 
 type SummaryStatsApi interface {
@@ -59,7 +54,7 @@ func (kc *kubeletClient) GetSummaryStats() (*ConditionStats, error) {
 }
 
 func (kc *kubeletClient) collect() error {
-	summary, err := kc.GetSummary()
+	summary, err := kc.getSummary()
 	if err != nil {
 		glog.Errorf("get summary error: %v\n", err)
 		return err
@@ -91,6 +86,7 @@ func (kc *kubeletClient) makeRequestAndGetValue(client *http.Client, req *http.R
 		kubeletAddr = req.URL.Host
 	}
 	glog.V(10).Infof("Raw response from Kubelet at %s: %s", kubeletAddr, string(body))
+	//glog.Infof("Raw response from kubelet at %s: %s", kubeletAddr, string(body))
 
 	err = json.Unmarshal(body, value)
 	if err != nil {
@@ -99,7 +95,7 @@ func (kc *kubeletClient) makeRequestAndGetValue(client *http.Client, req *http.R
 	return nil
 }
 
-func (kc *kubeletClient) GetSummary() (*stats.Summary, error) {
+func (kc *kubeletClient) getSummary() (*stats.Summary, error) {
 	scheme := "http"
 
 	url := url.URL{
@@ -121,3 +117,25 @@ func (kc *kubeletClient) GetSummary() (*stats.Summary, error) {
 	return summary, err
 }
 
+func (kc *kubeletClient) getCAdvisor() (error) {
+	glog.Infof("Inside get cadvisor info\n")
+	scheme := "http"
+
+	url := url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(kc.host, strconv.Itoa(kc.port)),
+		Path:   "/metrics/cadvisor",
+	}
+
+	req, err := http.NewRequest("GET", url.String(), nil)
+	if err != nil {
+		return err
+	}
+	summary := &stats.Summary{}
+	client := kc.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	err = kc.makeRequestAndGetValue(client, req, summary)
+	return err
+}
