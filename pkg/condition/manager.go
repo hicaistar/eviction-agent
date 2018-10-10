@@ -9,15 +9,15 @@ import (
 	"github.com/golang/glog"
 	"github.com/fsnotify/fsnotify"
 
-	"k8s.io/apimachinery/pkg/util/clock"
-
 	"eviction-agent/pkg/types"
 	"eviction-agent/pkg/evictionclient"
 )
 
 const (
 	// updatePeriod is the period
-	updatePeriod = 3 * time.Minute
+	updatePeriod = 5 * time.Second
+	statsBufferLen = 5
+	taintThreshold = 0.9
 )
 
 type NodeCondition struct {
@@ -25,39 +25,66 @@ type NodeCondition struct {
 	NetworkIOAvailabel bool
 }
 
+type statType struct {
+	time    time.Time
+	rxBytes uint64
+	txBytes uint64
+}
+
+type podStatType struct {
+	time        time.Time
+	name        string
+	namespace   string
+	netIOStats  statType
+	diskIOStats statType
+}
+
+type nodeStatsType struct {
+	netIOStats  statType
+	diskIOStats statType
+	podStats    map[string]podStatType
+}
+
 type ConditionManager interface {
 	// Start starts the condition manager
 	Start() error
+	// Get node condition
 	GetNodeCondition() (*NodeCondition)
+	// Choose one pod to evict, according priority or some policies
 	ChooseOnePodToEvict(string) (*types.PodInfo)
 }
 
 type conditionManager struct {
 	client              evictionclient.Client
 	policyConfigFile    string
-	clock               clock.Clock
+	taintThreshold      float64
 	untaintGracePeriod  string
-	nodeCondition       NodeCondition  //
-	//pods               []string // test store pod name
+	nodeCondition       NodeCondition
 	podToEvict          types.PodInfo
 	lastEvictPod        types.PodInfo
+	nodeStats           []nodeStatsType
 }
 
 type policyConfig struct {
 	UntaintGracePeriod string `json:"untaintGracePeriod"`
+	TaintThreshold     string `json:"taintThreshold"`
+	//Resource total
+	NetworkInterface   string `json:"networkInterface"`
+	NetworkIOPSTotal   string `json:"networkIOPSTotal"`
+	DiskDevName        string `json:"diskDevName"`
+	DiskIOPSTotal      string `json:"diskIOPSTotal"`
 }
 
 // NewConditionManager creates a condition manager
-func NewConditionManager(client evictionclient.Client, clock clock.Clock,
-	configFile string) ConditionManager {
+func NewConditionManager(client evictionclient.Client, configFile string) ConditionManager {
 	return &conditionManager{
 		client:     client,
-		clock:      clock,
 		policyConfigFile: configFile,
 		nodeCondition: NodeCondition{
 			DiskIOAvailable:    true,
 			NetworkIOAvailabel: true,
 		},
+		taintThreshold: taintThreshold,
 	}
 }
 
@@ -131,48 +158,112 @@ func (c *conditionManager) loadPolicyConfig() error {
 func (c *conditionManager) syncStats() {
 	glog.Infof("Start sync stats\n")
 	for {
-		c.nodeCondition.NetworkIOAvailabel = !c.nodeCondition.NetworkIOAvailabel
-		c.nodeCondition.DiskIOAvailable = !c.nodeCondition.DiskIOAvailable
-
-		/***
+		// Get summary stats
 		stats, err := c.client.GetSummaryStats()
 		if err != nil {
 			glog.Errorf("sync stats get summary stats error: %v", err)
 			continue
 		}
 
-		// test for summary stats api
+		newNodeStats := nodeStatsType{}
+		newNodeStats.podStats = make(map[string]podStatType)
 
+		// Get Network IO stats, add it to nodeStats
 		netStats := stats.NodeNetStats
-		glog.Infof("get node network stats: %v", netStats.Name)
-		netIfaces := netStats.Interfaces
-		for _, net := range netIfaces {
-			glog.Infof("net %v, rx: %v, tx: %v", net.Name, net.RxBytes, net.TxBytes)
-		}
+		newNodeStats.netIOStats.time = netStats.Time.Time
+		newNodeStats.netIOStats.rxBytes = *netStats.RxBytes
+		newNodeStats.netIOStats.txBytes = *netStats.TxBytes
 
+		// TODO: Get Disk IO stats, add it to nodeStats
+
+		// Get all pods stats, add them to nodeStats. podStats := stats.PodStats
+		// TODO: add Disk IO stat to pod stats
 		podStats := stats.PodStats
 		for _, pod := range podStats {
-			//glog.Infof("pod %v, ns: %v", pod.PodRef.Name, pod.PodRef.Namespace)
-			if strings.Contains(pod.PodRef.Name, "contiv-deploy") {
-				glog.Infof("get pod %v to evict\n", pod.PodRef.Name)
-				c.podToEvict.Name = pod.PodRef.Name
-				c.podToEvict.Namespace = pod.PodRef.Namespace
+			podStat := podStatType{
+				name: pod.PodRef.Name,
+				namespace: pod.PodRef.Namespace,
+				time: pod.StartTime.Time,
+				netIOStats: statType{
+					time:    pod.Network.Time.Time,
+					rxBytes: *pod.Network.RxBytes,
+					txBytes: *pod.Network.TxBytes,
+				},
+				diskIOStats: statType{},
 			}
+			keyName := podStat.namespace + "." + podStat.name
+			newNodeStats.podStats[keyName] = podStat
 		}
-		*/
-		// TODO: check Network IO stats, and change NodeCondition
 
-		// TODO: check Disk IO stats, and change NodeCondition
+		// add new node stats to list
+		if len(c.nodeStats) == statsBufferLen {
+			c.nodeStats = append(c.nodeStats[1:], newNodeStats)
+		} else {
+			c.nodeStats = append(c.nodeStats, newNodeStats)
+		}
+
 		time.Sleep(updatePeriod)
 	}
 }
 
 // GetNodeCondition
 func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
+	// Return directly, there are no enough stats
+	if len(c.nodeStats) != statsBufferLen {
+		return &c.nodeCondition
+	}
+	// Check network IO stats
+	newNetworkStat := statType{
+		time: c.nodeStats[statsBufferLen - 1].netIOStats.time,
+		rxBytes: c.nodeStats[statsBufferLen - 1].netIOStats.rxBytes,
+		txBytes: c.nodeStats[statsBufferLen - 1].netIOStats.txBytes,
+	}
+	lastNetworkStat := statType{
+		time: c.nodeStats[statsBufferLen - 2].netIOStats.time,
+		rxBytes: c.nodeStats[statsBufferLen - 2].netIOStats.rxBytes,
+		txBytes: c.nodeStats[statsBufferLen - 2].netIOStats.txBytes,
+	}
+	// TODO: compare new/last time, if equal, skip; and also compare last condition time, if not change, skip
+	networkIOPS := 1e9 * float64(newNetworkStat.rxBytes + newNetworkStat.txBytes -
+		lastNetworkStat.rxBytes - lastNetworkStat.txBytes) /
+		float64(newNetworkStat.time.UnixNano() - lastNetworkStat.time.UnixNano())
+	glog.Infof("get networkIOPS: %v Bytes/s", networkIOPS)
+
+	// TODO: add DiskIO check
+
+	c.nodeCondition.NetworkIOAvailabel = true
+	c.nodeCondition.DiskIOAvailable = true
 	return &c.nodeCondition
 }
 
-// ChoseOnePodToEvict
+// ChooseOnePodToEvict
 func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo) {
+	if len(c.nodeStats) != statsBufferLen {
+		glog.Infof("wait for a minute\n")
+		return &c.podToEvict
+	}
+	newPodStat := c.nodeStats[statsBufferLen - 1].podStats
+	lastPodStat := c.nodeStats[statsBufferLen - 2].podStats
+	for keyName, newPod := range newPodStat {
+		// test for function, remove it in future.
+		if newPod.namespace != "default" {
+			continue
+		}
+		lastPod := lastPodStat[keyName]
+		newNetworkStat := statType{
+			time: newPod.netIOStats.time,
+			rxBytes: newPod.netIOStats.rxBytes,
+			txBytes: newPod.netIOStats.txBytes,
+		}
+		lastNetworkStat := statType{
+			time: lastPod.time,
+			rxBytes: lastPod.netIOStats.rxBytes,
+			txBytes: lastPod.netIOStats.txBytes,
+		}
+		networkIOPS := 1e9 * float64(newNetworkStat.rxBytes + newNetworkStat.txBytes -
+			lastNetworkStat.txBytes - lastNetworkStat.rxBytes) /
+			float64(newNetworkStat.time.UnixNano() - lastNetworkStat.time.UnixNano())
+		glog.Infof("get pod: %v networkIOPS: %v Bytes/s", newPod.name, networkIOPS)
+	}
 	return &c.podToEvict
 }

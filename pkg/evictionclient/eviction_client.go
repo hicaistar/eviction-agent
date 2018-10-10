@@ -148,7 +148,7 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 	if action == "Taint" {
 		currentTaint := v1.Taint{
 			Key: taintKey,
-			Value: "Unavailable",
+			Value: "True",
 			Effect: "NoSchedule",
 		}
 		newTaints = append(newTaints, currentTaint)

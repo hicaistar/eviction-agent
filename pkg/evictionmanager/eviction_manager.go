@@ -5,8 +5,6 @@ import (
 
 	"github.com/golang/glog"
 
-	"k8s.io/apimachinery/pkg/util/clock"
-
 	"eviction-agent/pkg/types"
 	"eviction-agent/pkg/evictionclient"
 	"eviction-agent/pkg/condition"
@@ -14,7 +12,7 @@ import (
 
 const (
 	// updatePeriod is the period
-	taintUpdatePeriod = 5 * time.Second
+	taintUpdatePeriod = 20 * time.Second
 	taintGracePeriod = 1 * time.Minute
 )
 
@@ -35,7 +33,7 @@ type evictionManager struct {
 func NewEvictionManager(client evictionclient.Client, configFile string) EvictionManager {
 	return &evictionManager{
 		client:           client,
-		conditionManager: condition.NewConditionManager(client, clock.RealClock{}, configFile),
+		conditionManager: condition.NewConditionManager(client, configFile),
 		evictChan:        make(chan string, 1),
 		nodeTaint:        types.NodeTaintInfo{
 			DiskIO:    false,
@@ -70,13 +68,14 @@ func (e *evictionManager) Run() error {
 
 // evictOnePod call client to evict pod
 func (e *evictionManager) evictOnePod(evictType string) error {
-	// test for taint, move it after complete this evict process
-	return nil
 
 	// TODO: if it is evicting now, return directly
 	// Choose one pod according evict type
 
 	podToEvict := e.conditionManager.ChooseOnePodToEvict(evictType)
+
+	// test for choose pod, move it after complete this evict process
+	return nil
 
 	err := e.client.EvictOnePod(podToEvict)
 	return err
@@ -84,8 +83,10 @@ func (e *evictionManager) evictOnePod(evictType string) error {
 
 func (e *evictionManager) taintProcess() {
 	// taint process cycle
+	var err error
 	for {
-		var err error
+		// wait for some second
+		time.Sleep(taintUpdatePeriod)
 		// get taint condition
 		e.nodeTaint.DiskIO, e.nodeTaint.NetworkIO, err = e.client.GetTaintConditions()
 		if err != nil {
@@ -100,7 +101,9 @@ func (e *evictionManager) taintProcess() {
 		if condition.NetworkIOAvailabel && condition.DiskIOAvailable &&
 			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO {
 			// node is in good condition, there is no need to taint or un-taint
-			// and also there is no need to evict any pod
+			// there is no need to evict any pod either
+			// test for choose pod function, remove it in future
+			e.evictChan <- types.NetworkIO
 			continue
 		}
 
@@ -162,8 +165,5 @@ func (e *evictionManager) taintProcess() {
 			// evict one pod to reclaim resources
 			e.evictChan <- types.NetworkIO
 		}
-
-		// wait for some second
-		time.Sleep(taintUpdatePeriod)
 	}
 }
