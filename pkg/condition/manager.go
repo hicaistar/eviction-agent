@@ -161,7 +161,6 @@ func (c *conditionManager) loadPolicyConfig() error {
 func (c *conditionManager) syncStats() {
 	glog.Infof("Start sync stats\n")
 	for {
-
 		// Get summary stats
 		stats, err := c.client.GetSummaryStats()
 		if err != nil {
@@ -206,7 +205,6 @@ func (c *conditionManager) syncStats() {
 		} else {
 			c.nodeStats = append(c.nodeStats, newNodeStats)
 		}
-
 
 		time.Sleep(updatePeriod)
 	}

@@ -104,7 +104,7 @@ func (e *evictionManager) taintProcess() {
 			// there is no need to evict any pod either
 
 			// TODO: test for choose pod to evict, remove it.
-			e.evictChan <- types.DiskIO
+			//e.evictChan <- types.DiskIO
 			continue
 		}
 

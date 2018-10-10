@@ -8,7 +8,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/api/core/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -32,19 +31,20 @@ type Client interface {
 	EvictOnePod(*types.PodInfo) (error)
 	// GetLowerPriorityPods
 	GetLowerPriorityPods() ([]types.PodInfo, error)
+	// AddEvictAnnotationToPod
+	AddEvictAnnotationToPod(podInfo *types.PodInfo) error
 }
 
 type evictionClient struct {
 	nodeName string
 	client   *kubernetes.Clientset
-	clock    clock.Clock
 	nodeInfo summary.NodeInfo
 	summaryApi summary.SummaryStatsApi
 }
 
 // NewClientOrDie creates a new eviction client, panics if error occurs.
 func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
-	c := &evictionClient{clock: clock.RealClock{}}
+	c := &evictionClient{}
 	var config *rest.Config
 	var err error
 
@@ -170,7 +170,7 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 
 	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, v1.Node{})
 	if err != nil {
-		return fmt.Errorf("failed to create pathc for node %v", c.nodeName)
+		return fmt.Errorf("failed to create patch for node %v", c.nodeName)
 	}
 
 	_, err = c.client.CoreV1().Nodes().Patch(c.nodeName, k8stypes.StrategicMergePatchType, patchBytes)
@@ -222,4 +222,37 @@ func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
 		}
 	}
 	return pods, nil
+}
+
+// AddEvictAnnotationToPod add an evict annotation on pod
+func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo) error {
+	oldPod, err := c.client.CoreV1().Pods(podInfo.Namespace).Get(podInfo.Name, metav1.GetOptions{})
+	if err != nil {
+		glog.Errorf("get pod %s error", podInfo.Name)
+		return err
+	}
+	oldData, err := json.Marshal(oldPod)
+	if err != nil {
+		return fmt.Errorf("failed to marshal old node for node %v : %v", c.nodeName, err)
+	}
+	newPod := oldPod.DeepCopy()
+
+	if newPod.Annotations == nil {
+		glog.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
+		newPod.Annotations = make(map[string]string)
+	}
+	newPod.Annotations["needEvict"] = "true"
+
+	newData, err := json.Marshal(newPod)
+	if err != nil {
+		return fmt.Errorf("failed to marshal new pod %v : %v", podInfo.Name, err)
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, v1.Pod{})
+	if err != nil {
+		return fmt.Errorf("failed to create patch for pod %v", podInfo.Name)
+	}
+	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name,k8stypes.StrategicMergePatchType, patchBytes)
+
+	return err
 }
