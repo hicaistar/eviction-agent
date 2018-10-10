@@ -13,4 +13,6 @@ type NodeTaintInfo struct {
 const (
 	DiskIO = "DiskIOBusy"
 	NetworkIO = "NetworkIOBusy"
+	LowPriority = 0
+	HighPriority = 1
 )

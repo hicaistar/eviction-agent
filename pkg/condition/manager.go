@@ -15,7 +15,7 @@ import (
 
 const (
 	// updatePeriod is the period
-	updatePeriod = 5 * time.Second
+	updatePeriod = 30 * time.Second
 	statsBufferLen = 5
 	taintThreshold = 0.9
 )
@@ -63,11 +63,13 @@ type conditionManager struct {
 	podToEvict          types.PodInfo
 	lastEvictPod        types.PodInfo
 	nodeStats           []nodeStatsType
+	autoEvict           bool
 }
 
 type policyConfig struct {
 	UntaintGracePeriod string `json:"untaintGracePeriod"`
 	TaintThreshold     string `json:"taintThreshold"`
+	AutoEvictFlag      bool   `json:"autoEvictFalg"`
 	//Resource total
 	NetworkInterface   string `json:"networkInterface"`
 	NetworkIOPSTotal   string `json:"networkIOPSTotal"`
@@ -85,6 +87,7 @@ func NewConditionManager(client evictionclient.Client, configFile string) Condit
 			NetworkIOAvailabel: true,
 		},
 		taintThreshold: taintThreshold,
+		autoEvict: false,
 	}
 }
 
@@ -158,12 +161,14 @@ func (c *conditionManager) loadPolicyConfig() error {
 func (c *conditionManager) syncStats() {
 	glog.Infof("Start sync stats\n")
 	for {
+
 		// Get summary stats
 		stats, err := c.client.GetSummaryStats()
 		if err != nil {
 			glog.Errorf("sync stats get summary stats error: %v", err)
 			continue
 		}
+
 
 		newNodeStats := nodeStatsType{}
 		newNodeStats.podStats = make(map[string]podStatType)
@@ -201,6 +206,7 @@ func (c *conditionManager) syncStats() {
 		} else {
 			c.nodeStats = append(c.nodeStats, newNodeStats)
 		}
+
 
 		time.Sleep(updatePeriod)
 	}
@@ -241,29 +247,6 @@ func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo
 	if len(c.nodeStats) != statsBufferLen {
 		glog.Infof("wait for a minute\n")
 		return &c.podToEvict
-	}
-	newPodStat := c.nodeStats[statsBufferLen - 1].podStats
-	lastPodStat := c.nodeStats[statsBufferLen - 2].podStats
-	for keyName, newPod := range newPodStat {
-		// test for function, remove it in future.
-		if newPod.namespace != "default" {
-			continue
-		}
-		lastPod := lastPodStat[keyName]
-		newNetworkStat := statType{
-			time: newPod.netIOStats.time,
-			rxBytes: newPod.netIOStats.rxBytes,
-			txBytes: newPod.netIOStats.txBytes,
-		}
-		lastNetworkStat := statType{
-			time: lastPod.time,
-			rxBytes: lastPod.netIOStats.rxBytes,
-			txBytes: lastPod.netIOStats.txBytes,
-		}
-		networkIOPS := 1e9 * float64(newNetworkStat.rxBytes + newNetworkStat.txBytes -
-			lastNetworkStat.txBytes - lastNetworkStat.rxBytes) /
-			float64(newNetworkStat.time.UnixNano() - lastNetworkStat.time.UnixNano())
-		glog.Infof("get pod: %v networkIOPS: %v Bytes/s", newPod.name, networkIOPS)
 	}
 	return &c.podToEvict
 }

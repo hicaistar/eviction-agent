@@ -30,6 +30,8 @@ type Client interface {
 	GetSummaryStats() (*summary.ConditionStats, error)
 	// EvictOnePod evict one pod
 	EvictOnePod(*types.PodInfo) (error)
+	// GetLowerPriorityPods
+	GetLowerPriorityPods() ([]types.PodInfo, error)
 }
 
 type evictionClient struct {
@@ -180,7 +182,7 @@ func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error){
 	return stats, err
 }
 
-// EvictOnePodByName
+// EvictOnePodByName call evict-api to evict one pod
 func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
 	eviction := policyv1.Eviction{
 		TypeMeta: metav1.TypeMeta{
@@ -193,4 +195,31 @@ func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
 	}
 	err := c.client.CoreV1().Pods(eviction.Namespace).Evict(&eviction)
 	return err
+}
+
+// GetLowerPriorityPods return pods which are set low priority
+func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
+	var pods []types.PodInfo
+	options := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", c.nodeName),
+	}
+	podLists, err := c.client.CoreV1().Pods(metav1.NamespaceAll).List(options)
+	if err != nil {
+		glog.Errorf("List pods on %s error\n", c.nodeName)
+		return nil, err
+	}
+	for _, pod := range podLists.Items {
+		priority := types.LowPriority
+		if pod.Spec.Priority != nil {
+			priority = int(*pod.Spec.Priority)
+		}
+		if priority == types.LowPriority {
+			newPod := types.PodInfo{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			}
+			pods = append(pods, newPod)
+		}
+	}
+	return pods, nil
 }

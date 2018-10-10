@@ -54,6 +54,7 @@ func (kc *kubeletClient) GetSummaryStats() (*ConditionStats, error) {
 }
 
 func (kc *kubeletClient) collect() error {
+
 	summary, err := kc.getSummary()
 	if err != nil {
 		glog.Errorf("get summary error: %v\n", err)
@@ -62,6 +63,7 @@ func (kc *kubeletClient) collect() error {
 	//glog.Infof("Get summary node name: %v", summary.Node.NodeName)
 	kc.stats.NodeNetStats = summary.Node.Network
 	kc.stats.PodStats = summary.Pods
+
 	return nil
 }
 

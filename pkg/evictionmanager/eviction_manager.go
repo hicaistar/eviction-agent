@@ -102,8 +102,9 @@ func (e *evictionManager) taintProcess() {
 			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO {
 			// node is in good condition, there is no need to taint or un-taint
 			// there is no need to evict any pod either
-			// test for choose pod function, remove it in future
-			e.evictChan <- types.NetworkIO
+
+			// TODO: test for choose pod to evict, remove it.
+			e.evictChan <- types.DiskIO
 			continue
 		}
 
