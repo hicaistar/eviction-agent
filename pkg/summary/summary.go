@@ -13,6 +13,7 @@ import (
 
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
+	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
 )
 
 type NodeInfo struct {
@@ -22,8 +23,12 @@ type NodeInfo struct {
 }
 
 type ConditionStats struct {
-	NodeNetStats *statsapi.NetworkStats
-	PodStats     []statsapi.PodStats
+	NodeName        string
+	NodeNetStats    *statsapi.NetworkStats
+	NodeDiskIoStats *statsapi.DiskioStats
+	PodStats        []statsapi.PodStats
+	SysContainers   []statsapi.ContainerStats
+	emptyStats      *cadvisorapiv1.DiskIoStats
 }
 
 type SummaryStatsApi interface {
@@ -60,8 +65,10 @@ func (kc *kubeletClient) collect() error {
 		return err
 	}
 	kc.stats.NodeNetStats = summary.Node.Network
+	kc.stats.NodeDiskIoStats = summary.Node.Diskio
 	kc.stats.PodStats = summary.Pods
-
+	kc.stats.NodeName = summary.Node.NodeName
+	kc.stats.SysContainers = summary.Node.SystemContainers
 	return nil
 }
 

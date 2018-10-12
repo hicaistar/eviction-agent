@@ -12,8 +12,8 @@ import (
 
 const (
 	// updatePeriod is the period
-	taintUpdatePeriod = 20 * time.Second
-	taintGracePeriod = 1 * time.Minute
+	taintUpdatePeriod = 30 * time.Second
+	taintGracePeriod = 3 * time.Minute
 )
 
 type EvictionManager interface {
@@ -67,18 +67,19 @@ func (e *evictionManager) Run() error {
 }
 
 // evictOnePod call client to evict pod
-func (e *evictionManager) evictOnePod(evictType string) error {
+func (e *evictionManager) evictOnePod(evictType string) {
 
-	// TODO: if it is evicting now, return directly
-	// Choose one pod according evict type
-
-	podToEvict := e.conditionManager.ChooseOnePodToEvict(evictType)
-
+	podToEvict, err:= e.conditionManager.ChooseOnePodToEvict(evictType)
+	if err != nil {
+		glog.Errorf("evictOnePod error: %v", err)
+		return
+	}
+	glog.Infof("Get pod: %v to evict.\n", podToEvict.Name)
 	// test for choose pod, move it after complete this evict process
-	return nil
+	return
 
-	err := e.client.EvictOnePod(podToEvict)
-	return err
+	err = e.client.EvictOnePod(podToEvict)
+	return
 }
 
 func (e *evictionManager) taintProcess() {
@@ -88,7 +89,7 @@ func (e *evictionManager) taintProcess() {
 		// wait for some second
 		time.Sleep(taintUpdatePeriod)
 		// get taint condition
-		e.nodeTaint.DiskIO, e.nodeTaint.NetworkIO, err = e.client.GetTaintConditions()
+		e.nodeTaint.NetworkIO, e.nodeTaint.DiskIO, err = e.client.GetTaintConditions()
 		if err != nil {
 			glog.Errorf("get taint condition error: %v\n", err)
 			continue
@@ -102,23 +103,21 @@ func (e *evictionManager) taintProcess() {
 			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO {
 			// node is in good condition, there is no need to taint or un-taint
 			// there is no need to evict any pod either
-
-			// TODO: test for choose pod to evict, remove it.
-			//e.evictChan <- types.DiskIO
 			continue
 		}
 
 		// DiskIO condition process
 		if condition.DiskIOAvailable {
-			if e.nodeTaint.NetworkIO {
-				// node is tainted NetworkIO
+			if e.nodeTaint.DiskIO {
+				// node is tainted DiskIO busy
 				// TODO: wait taintGraceTime
-				duration := time.Now().Sub(e.lastTaintNetIOTime)
+				duration := time.Now().Sub(e.lastTaintDiskIOTime)
 				glog.Infof("last taint duration: %v\n", duration)
 				if duration.Minutes() > taintGracePeriod.Minutes() {
-					err = e.client.SetTaintConditions(types.NetworkIO, "UnTaint")
+					err = e.client.SetTaintConditions(types.DiskIO, "UnTaint")
+					glog.Infof("Untaint node %s", types.DiskIO)
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.NetworkIO, err)
+						glog.Errorf("untaint node %s error: %v\n", types.DiskIO, err)
 					}
 				}
 			}
@@ -128,7 +127,7 @@ func (e *evictionManager) taintProcess() {
 			e.lastTaintDiskIOTime = time.Now()
 			if !e.nodeTaint.DiskIO {
 				// taint node, evict pod
-				glog.Infof("taint node %s unavailable", types.DiskIO)
+				glog.Infof("taint node %s ", types.DiskIO)
 				err = e.client.SetTaintConditions(types.DiskIO, "Taint")
 				if err != nil {
 					glog.Errorf("add taint %s error: %v", types.DiskIO, err)
@@ -140,15 +139,15 @@ func (e *evictionManager) taintProcess() {
 
 		// NetworkIO condition process
 		if condition.NetworkIOAvailabel {
-			if e.nodeTaint.DiskIO {
-				duration := time.Now().Sub(e.lastTaintDiskIOTime)
+			if e.nodeTaint.NetworkIO {
+				duration := time.Now().Sub(e.lastTaintNetIOTime)
 				glog.Infof("last taint duration: %v\n", duration)
 				if duration.Minutes() > taintGracePeriod.Minutes() {
-					err = e.client.SetTaintConditions(types.DiskIO, "UnTaint")
+					err = e.client.SetTaintConditions(types.NetworkIO, "UnTaint")
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.DiskIO, err)
+						glog.Errorf("untaint node %s error: %v\n", types.NetworkIO, err)
 					}
-					glog.Infof("untaint node %s\n", types.DiskIO)
+					glog.Infof("untaint node %s\n", types.NetworkIO)
 				}
 			}
 		} else {

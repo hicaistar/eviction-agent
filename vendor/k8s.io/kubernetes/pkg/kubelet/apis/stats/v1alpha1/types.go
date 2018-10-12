@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,6 +47,9 @@ type NodeStats struct {
 	// Stats pertaining to memory (RAM) resources.
 	// +optional
 	Memory *MemoryStats `json:"memory,omitempty"`
+	// Stats pertaining to diskio resources.
+	// +optional
+	Diskio *DiskioStats `json:"diskio,omitempty"`
 	// Stats pertaining to network resources.
 	// +optional
 	Network *NetworkStats `json:"network,omitempty"`
@@ -83,7 +87,7 @@ type RuntimeStats struct {
 const (
 	// SystemContainerKubelet is the container name for the system container tracking Kubelet usage.
 	SystemContainerKubelet = "kubelet"
-	// SystemContainerRuntime is the container name for the system container tracking the runtime (e.g. docker) usage.
+	// SystemContainerRuntime is the container name for the system container tracking the runtime (e.g. docker or rkt) usage.
 	SystemContainerRuntime = "runtime"
 	// SystemContainerMisc is the container name for the system container tracking non-kubernetes processes.
 	SystemContainerMisc = "misc"
@@ -107,6 +111,9 @@ type PodStats struct {
 	// Stats pertaining to memory (RAM) resources consumed by pod cgroup (which includes all containers' resource usage and pod overhead).
 	// +optional
 	Memory *MemoryStats `json:"memory,omitempty"`
+	// Stats pertaining to diskio resources.
+	// +optional
+	Diskio *DiskioStats `json:"diskio,omitempty"`
 	// Stats pertaining to network resources.
 	// +optional
 	Network *NetworkStats `json:"network,omitempty"`
@@ -133,6 +140,9 @@ type ContainerStats struct {
 	// Stats pertaining to memory (RAM) resources.
 	// +optional
 	Memory *MemoryStats `json:"memory,omitempty"`
+	// Stats pertaining to diskio resources.
+	// +optional
+	Diskio *DiskioStats `json:"diskio,omitempty"`
 	// Metrics for Accelerators. Each Accelerator corresponds to one element in the array.
 	Accelerators []AcceleratorStats `json:"accelerators,omitempty"`
 	// Stats pertaining to container rootfs usage of filesystem resources.
@@ -163,12 +173,16 @@ type InterfaceStats struct {
 	// Cumulative count of bytes received.
 	// +optional
 	RxBytes *uint64 `json:"rxBytes,omitempty"`
+	// Cumulative count of packets received.
+	RxPackets *uint64 `json:"rx_packets"`
 	// Cumulative count of receive errors encountered.
 	// +optional
 	RxErrors *uint64 `json:"rxErrors,omitempty"`
 	// Cumulative count of bytes transmitted.
 	// +optional
 	TxBytes *uint64 `json:"txBytes,omitempty"`
+	// Cumulative count of packets transmitted.
+	TxPackets *uint64 `json:"tx_packets"`
 	// Cumulative count of transmit errors encountered.
 	// +optional
 	TxErrors *uint64 `json:"txErrors,omitempty"`
@@ -183,6 +197,15 @@ type NetworkStats struct {
 	InterfaceStats `json:",inline"`
 
 	Interfaces []InterfaceStats `json:"interfaces,omitempty"`
+}
+
+// DiskioStats contains data about diskio resources.
+type DiskioStats struct {
+	// The time
+	Time      metav1.Time `json:"time"`
+	HasDiskIo bool        `json:"hasDiskIo"`
+	// Stats
+	DiskIoStats *cadvisorapiv1.DiskIoStats `json:"diskIoStats"`
 }
 
 // CPUStats contains data about CPU usage.
