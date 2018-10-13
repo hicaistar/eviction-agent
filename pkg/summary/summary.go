@@ -125,7 +125,6 @@ func (kc *kubeletClient) getSummary() (*stats.Summary, error) {
 }
 
 func (kc *kubeletClient) getCAdvisor() (error) {
-	glog.Infof("Inside get cadvisor info\n")
 	scheme := "http"
 
 	url := url.URL{
@@ -138,11 +137,11 @@ func (kc *kubeletClient) getCAdvisor() (error) {
 	if err != nil {
 		return err
 	}
-	summary := &stats.Summary{}
+	var cadvisor interface{}
 	client := kc.client
 	if client == nil {
 		client = http.DefaultClient
 	}
-	err = kc.makeRequestAndGetValue(client, req, summary)
+	err = kc.makeRequestAndGetValue(client, req, cadvisor)
 	return err
 }

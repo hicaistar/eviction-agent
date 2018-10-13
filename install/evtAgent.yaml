@@ -75,13 +75,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POLICY_CONFIG_FILE
+                value: "/tmp/config.json"
           securityContext:
             privileged: true
           volumeMounts:
           - mountPath: /tmp
-            name: tmp-log
+            name: tmp
             readOnly: false
       volumes:
-        - name: tmp-log
+        - name: tmp
           hostPath:
             path: /tmp

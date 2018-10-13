@@ -14,7 +14,8 @@ import (
 
 func main() {
 	rand.Seed(time.Now().UTC().UnixNano())
-	flag.Set("logtostderr", "ture")
+	flag.Set("logtostderr", "true")
+	flag.Set("stderrthreshold", "INFO")
 	flag.Parse()
 
 	eao := options.NewEvictionAgentOptions()

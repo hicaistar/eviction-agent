@@ -17,6 +17,7 @@ import (
 	"eviction-agent/cmd/options"
 	"eviction-agent/pkg/summary"
 	"eviction-agent/pkg/types"
+	"strconv"
 )
 
 // Client is the interface of eviction client
@@ -32,7 +33,9 @@ type Client interface {
 	// GetLowerPriorityPods
 	GetLowerPriorityPods() ([]types.PodInfo, error)
 	// AddEvictAnnotationToPod
-	AddEvictAnnotationToPod(podInfo *types.PodInfo) error
+	AddEvictAnnotationToPod(podInfo *types.PodInfo, priority string) error
+	// GetIOPSTotalFromAnnotations
+	GetIOPSTotalFromAnnotations() (*types.NodeIOPSTotal, error)
 }
 
 type evictionClient struct {
@@ -110,6 +113,33 @@ func (c *evictionClient) getNodeAddress() (string, error) {
 	return "", fmt.Errorf("node had no addresses that matched\n")
 }
 
+func (c evictionClient) GetIOPSTotalFromAnnotations() (*types.NodeIOPSTotal, error) {
+	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
+	if err != nil {
+		glog.Errorf("get node taint condition error %v", err)
+		return nil, err
+	}
+	nodeIOPSTotal := types.NodeIOPSTotal{}
+	annotations := node.Annotations
+	for key, value := range annotations {
+		if key == types.NodeDiskIOPSTotal {
+			v, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			nodeIOPSTotal.DiskIOPSTotal = int32(v)
+		}
+		if key == types.NodeNetworkIOPSTotal {
+			v, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			nodeIOPSTotal.NetworkIOPSTotal = int32(v)
+		}
+	}
+	return &nodeIOPSTotal, nil
+}
+
 func (c *evictionClient) GetTaintConditions() (bool, bool, error) {
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
@@ -184,6 +214,9 @@ func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error){
 
 // EvictOnePodByName call evict-api to evict one pod
 func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
+	if podToEvict.Name == "" {
+		return fmt.Errorf("pod name should not be empty")
+	}
 	eviction := policyv1.Eviction{
 		TypeMeta: metav1.TypeMeta{
 		},
@@ -209,11 +242,15 @@ func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
 		return nil, err
 	}
 	for _, pod := range podLists.Items {
-		priority := types.LowPriority
+		// default is High priority
+		priority := types.HighPriority
 		if pod.Spec.Priority != nil {
 			priority = int(*pod.Spec.Priority)
 		}
-		if priority == types.LowPriority {
+		glog.V(10).Infof("Get pod priority: %v", priority)
+		//if priority == types.LowPriority {
+		// TODO: test for code, remove it.
+		if pod.Namespace == "default" {
 			newPod := types.PodInfo{
 				Name:      pod.Name,
 				Namespace: pod.Namespace,
@@ -225,7 +262,10 @@ func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
 }
 
 // AddEvictAnnotationToPod add an evict annotation on pod
-func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo) error {
+func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo, priority string) error {
+	if podInfo.Name == "" {
+		return fmt.Errorf("pod name should not be empty")
+	}
 	oldPod, err := c.client.CoreV1().Pods(podInfo.Namespace).Get(podInfo.Name, metav1.GetOptions{})
 	if err != nil {
 		glog.Errorf("get pod %s error", podInfo.Name)
@@ -241,7 +281,7 @@ func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo) error {
 		glog.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
 		newPod.Annotations = make(map[string]string)
 	}
-	newPod.Annotations["needEvict"] = "true"
+	newPod.Annotations[priority] = "true"
 
 	newData, err := json.Marshal(newPod)
 	if err != nil {

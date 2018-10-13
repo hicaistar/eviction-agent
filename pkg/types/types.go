@@ -10,9 +10,19 @@ type NodeTaintInfo struct {
 	NetworkIO bool
 }
 
+type NodeIOPSTotal struct {
+	DiskIOPSTotal    int32
+	NetworkIOPSTotal int32
+}
+
 const (
-	DiskIO = "DiskIoBusy"
-	NetworkIO = "NetworkIoBusy"
+	DiskIO = "DiskIOBusy"
+	NodeDiskIOPSTotal = "DiskIOPSTotal"
+	NodeNetworkIOPSTotal = "NetworkIOPSTotal"
+	NetworkIO = "NetworkIOBusy"
+	NeedEvict = "needEvict"
+	EvictCandidate = "evictionCandidate"
 	LowPriority = 0
 	HighPriority = 1
+
 )

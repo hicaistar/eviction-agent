@@ -13,7 +13,7 @@ import (
 const (
 	// updatePeriod is the period
 	taintUpdatePeriod = 30 * time.Second
-	taintGracePeriod = 3 * time.Minute
+	taintGracePeriod = 5 * time.Minute
 )
 
 type EvictionManager interface {
@@ -68,17 +68,19 @@ func (e *evictionManager) Run() error {
 
 // evictOnePod call client to evict pod
 func (e *evictionManager) evictOnePod(evictType string) {
-
-	podToEvict, err:= e.conditionManager.ChooseOnePodToEvict(evictType)
+	podToEvict, isEvict, priority, err:= e.conditionManager.ChooseOnePodToEvict(evictType)
 	if err != nil {
-		glog.Errorf("evictOnePod error: %v", err)
+		glog.Errorf("evictOnePod choose one pod to evict error: %v", err)
 		return
 	}
 	glog.Infof("Get pod: %v to evict.\n", podToEvict.Name)
-	// test for choose pod, move it after complete this evict process
-	return
 
-	err = e.client.EvictOnePod(podToEvict)
+	if isEvict {
+		err = e.client.EvictOnePod(podToEvict)
+	} else {
+		err = e.client.AddEvictAnnotationToPod(podToEvict, priority)
+	}
+	glog.Errorf("Evict pod error: %v", err)
 	return
 }
 
@@ -160,7 +162,6 @@ func (e *evictionManager) taintProcess() {
 				if err != nil {
 					glog.Errorf("add taint %s error: %v", types.NetworkIO, err)
 				}
-				glog.Infof("untaint node %s\n", types.NetworkIO)
 			}
 			// evict one pod to reclaim resources
 			e.evictChan <- types.NetworkIO

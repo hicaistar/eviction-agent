@@ -1,0 +1,9 @@
+{
+  "untaintGracePeriod": 5,
+  "autoEvictFlag": true,
+  "networkInterface": "eth0",
+  "networkIOPSTotal": 10000,
+  "diskIOPSTotal": 10000,
+  "diskDevName": "",
+  "taintThreshold": 0.9
+}
