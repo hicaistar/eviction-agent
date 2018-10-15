@@ -19,14 +19,15 @@ const (
 	updatePeriod = 10 * time.Second
 	statsBufferLen = 3
 	taintThreshold = 0.9
-	defaultInterface = "eth0"
 	defaultDiskIOTotal = 10000
-	defaultNetwortIOTotal = 10000
+	defaultNetwortIOTotal = 100000000
+	unTaintGracePeriod = 5 * time.Minute // Minutes
 )
 
 type NodeCondition struct {
 	DiskIOAvailable    bool
-	NetworkIOAvailabel bool
+	NetworkRxAvailabel bool
+	NetworkTxAvailabel bool
 	CPUAvailable       bool
 	MemoryAvailable    bool
 }
@@ -64,35 +65,39 @@ type ConditionManager interface {
 	GetNodeCondition() (*NodeCondition)
 	// Choose one pod to evict, according priority or some policies
 	ChooseOnePodToEvict(string) (*types.PodInfo, bool, string, error)
+	// GetUnTaintGracePeriod get value from policy file
+	GetUnTaintGracePeriod() time.Duration
 }
 
 type conditionManager struct {
-	client              evictionclient.Client
-	policyConfigFile    string
-	taintThreshold      float64
-	untaintGracePeriod  int32   // minutes
-	nodeCondition       NodeCondition
-	podToEvict          types.PodInfo
-	nodeStats           []nodeStatsType
-	autoEvict           bool
-	networkInterface    string
-	diskDevName         string
-	diskIoTotal         int32
-	networkIoTotal      int32
-	invalidEvictCount   int32
-	cpuTotal            int64
-	memTotal            int64
+	client               evictionclient.Client
+	policyConfigFile     string
+	taintThreshold       map[string]float64
+	untaintGracePeriod   time.Duration   // minutes
+	nodeCondition        NodeCondition
+	podToEvict           types.PodInfo
+	nodeStats            []nodeStatsType
+	autoEvict            bool
+	networkInterfaces    []string
+	diskDevName          string
+	diskIoTotal          int32
+	networkIoTotal       int32
+	invalidEvictCount    int32
+	cpuTotal             int64
+	memTotal             int64
+	lowPriorityThreshold int
 }
 
 type policyConfig struct {
-	UntaintGracePeriod int32   `json:"untaintGracePeriod"`
-	TaintThreshold     float64 `json:"taintThreshold"`
-	AutoEvictFlag      bool    `json:"autoEvictFlag"`
+	UntaintGracePeriod   int32               `json:"untaintGracePeriod"`
+	TaintThreshold       map[string]float64  `json:"taintThreshold"`
+	AutoEvictFlag        bool                `json:"autoEvictFlag"`
 	//Resource total
-	NetworkInterface   string  `json:"networkInterface"`
-	NetworkIOPSTotal   int32   `json:"networkIOPSTotal"`
-	DiskDevName        string  `json:"diskDevName"`
-	DiskIOPSTotal      int32   `json:"diskIOPSTotal"`
+	NetworkInterfaces    []string            `json:"networkInterfaces"`
+	NetworkBPSTotal      int32               `json:"networkBPSTotal"`
+	DiskDevName          string              `json:"diskDevName"`
+	DiskIOPSTotal        int32               `json:"diskIOPSTotal"`
+	LowPriorityThreshold int                 `json:"lowPriorityThreshold"`
 }
 
 // NewConditionManager creates a condition manager
@@ -101,14 +106,17 @@ func NewConditionManager(client evictionclient.Client, configFile string) Condit
 		client:     client,
 		policyConfigFile: configFile,
 		nodeCondition: NodeCondition{
+			CPUAvailable: true,
+			MemoryAvailable: true,
 			DiskIOAvailable:    true,
-			NetworkIOAvailabel: true,
+			NetworkRxAvailabel: true,
+			NetworkTxAvailabel: true,
 		},
-		taintThreshold: taintThreshold,
+		taintThreshold: make(map[string]float64),
 		autoEvict: false,
-		networkInterface: defaultInterface,
 		diskIoTotal: defaultDiskIOTotal,
 		networkIoTotal: defaultNetwortIOTotal,
+		untaintGracePeriod: unTaintGracePeriod,
 	}
 }
 
@@ -121,11 +129,15 @@ func (c *conditionManager) Start() error {
 		glog.Errorf("Get resource from node error: %v", err)
 		return err
 	}
-	c.networkIoTotal = nodeIOPSTotal.NetworkIOPSTotal
+	c.networkIoTotal = nodeIOPSTotal.NetworkBPSTotal
 	c.diskIoTotal = nodeIOPSTotal.DiskIOPSTotal
 	c.cpuTotal = nodeIOPSTotal.CPUTotal
 	c.memTotal = nodeIOPSTotal.MemoryTotal
-	glog.Infof("Get total value, networkIOPS: %v, diskIOPS: %v, cpu: %v, memory: %v",
+	c.taintThreshold["CPU"] = 1
+	c.taintThreshold["DiskIo"] = 1
+	c.taintThreshold["NetworkIo"] = 1
+	c.taintThreshold["Memory"] = 1
+	glog.Infof("Get total value, networkBPS: %v, diskIOPS: %v, cpu: %v, memory: %v",
 		c.networkIoTotal, c.diskIoTotal, c.cpuTotal, c.memTotal)
 
 	// load policy configuration
@@ -193,7 +205,7 @@ func (c *conditionManager) loadPolicyConfig() error {
 
 	// TODO: add other configure here
 	if config.UntaintGracePeriod != 0 {
-		c.untaintGracePeriod = config.UntaintGracePeriod
+		c.untaintGracePeriod = time.Minute * time.Duration(config.UntaintGracePeriod)
 	}
 
 	if config.DiskDevName != "" {
@@ -203,21 +215,43 @@ func (c *conditionManager) loadPolicyConfig() error {
 	if config.DiskIOPSTotal != 0 {
 		c.diskIoTotal = config.DiskIOPSTotal
 	}
-	if int(config.TaintThreshold) != 0 {
-		c.taintThreshold = config.TaintThreshold
+	if config.TaintThreshold != nil {
+		if v, ok := config.TaintThreshold["CPU"]; ok && v > 0 {
+			c.taintThreshold["CPU"] = v
+		}
+		if v, ok := config.TaintThreshold["DiskIo"]; ok && v > 0 {
+			c.taintThreshold["DiskIo"] = v
+		}
+		if v, ok := config.TaintThreshold["NetworkIo"]; ok && v > 0 {
+			c.taintThreshold["NetworkIo"] = v
+		}
+		if v, ok := config.TaintThreshold["Memory"]; ok && v > 0 {
+			c.taintThreshold["Memory"] = v
+		}
 	}
-	if config.NetworkIOPSTotal != 0 {
-		c.networkIoTotal = config.NetworkIOPSTotal
+	if config.NetworkBPSTotal != 0 {
+		c.networkIoTotal = config.NetworkBPSTotal
 	}
-	if config.NetworkInterface != "" {
-		c.networkInterface = config.NetworkInterface
+	if config.NetworkInterfaces != nil {
+		c.networkInterfaces = config.NetworkInterfaces
+	}
+	if config.LowPriorityThreshold != 0 {
+		c.lowPriorityThreshold = config.LowPriorityThreshold
 	}
 	c.autoEvict = config.AutoEvictFlag
-	glog.Infof("Get diskIoTotal: %v, taintThreshold: %v, network name: %v, " +
-		"networkIOTotal: %v, autoEvictFlag: %v, diskDevName: %v",
-		c.diskIoTotal, c.taintThreshold, c.networkInterface, c.networkIoTotal, c.autoEvict, c.diskDevName)
+	glog.Infof("Get configuration --diskIoTotal=%v, --taintThreshold=%v, --network interfaces=%v, " +
+		"--networkIOTotal=%v, --autoEvictFlag=%v, --diskDevName=%v, --untaintGracePeriod=%v, " +
+		"--lowPriorityThreshold=%v",
+		c.diskIoTotal, c.taintThreshold, c.networkInterfaces,
+		c.networkIoTotal, c.autoEvict, c.diskDevName, c.untaintGracePeriod,
+		c.lowPriorityThreshold)
 
 	return nil
+}
+
+// GetUnTaintGracePeriod return un-Taint grace period to taint process
+func (c conditionManager) GetUnTaintGracePeriod() time.Duration {
+	return c.untaintGracePeriod
 }
 
 // syncStats
@@ -250,17 +284,22 @@ func (c *conditionManager) syncStats() {
 
 		// Get Network IO stats, add it to nodeStats
 		netStats := stats.NodeNetStats
+		newNodeStats.netIOStats.time = netStats.Time.Time
+		for _, netName := range c.networkInterfaces {
+			newNodeStats.netIOStats.name += netName + "."
+		}
 		for _, iface := range netStats.Interfaces {
 			net := statType{}
 			if iface.RxBytes != nil && iface.TxBytes != nil {
 				net.rx = *iface.RxBytes
 				net.tx = *iface.TxBytes
 			}
-			if iface.Name == c.networkInterface {
-				newNodeStats.netIOStats.time = netStats.Time.Time
-				newNodeStats.netIOStats.rx = net.rx
-				newNodeStats.netIOStats.tx = net.tx
-				newNodeStats.netIOStats.name = iface.Name
+			// traverse all net interfaces
+			for _, netName := range c.networkInterfaces {
+				if iface.Name == netName {
+					newNodeStats.netIOStats.rx += net.rx
+					newNodeStats.netIOStats.tx += net.tx
+				}
 			}
 		}
 
@@ -296,8 +335,7 @@ func (c *conditionManager) syncStats() {
 			}
 			netIoStats := statType{}
 			if pod.Network != nil {
-				if pod.Network.RxBytes != nil && pod.Network.TxBytes != nil &&
-					pod.Network.Name == c.networkInterface {
+				if pod.Network.RxBytes != nil && pod.Network.TxBytes != nil {
 					netIoStats.rx = *pod.Network.RxBytes
 					netIoStats.tx = *pod.Network.TxBytes
 				}
@@ -313,6 +351,16 @@ func (c *conditionManager) syncStats() {
 					tx:   netIoStats.tx,
 				},
 				diskIOStats: diskStats,
+			}
+			if pod.CPU != nil {
+				if pod.CPU.UsageNanoCores != nil {
+					podStat.cpuUsage = float64(*pod.CPU.UsageNanoCores) / 1e9
+				}
+			}
+			if pod.Memory != nil {
+				if pod.Memory.UsageBytes != nil {
+					podStat.memoryUsage = *pod.Memory.UsageBytes
+				}
 			}
 			keyName := podStat.namespace + "." + podStat.name
 			newNodeStats.podStats[keyName] = podStat
@@ -384,18 +432,18 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 	newStats := c.nodeStats[statsBufferLen - 1]
 	lastStats := c.nodeStats[statsBufferLen - 2]
 	// CPU check
-	if newStats.cpuUsage < float64(c.cpuTotal) * c.taintThreshold {
+	if newStats.cpuUsage < float64(c.cpuTotal) * c.taintThreshold["CPU"] {
 		c.nodeCondition.CPUAvailable = true
 	} else {
 		c.nodeCondition.CPUAvailable = false
 	}
 	// Memory check
-	if float64(newStats.memoryUsage) < float64(c.memTotal) * c.taintThreshold {
+	if float64(newStats.memoryUsage) < float64(c.memTotal) * c.taintThreshold["Memory"] {
 		c.nodeCondition.MemoryAvailable = true
 	} else {
 		c.nodeCondition.MemoryAvailable = false
 	}
-	glog.Info("Get CPU: %v, Memory: %v", )
+	glog.Infof("Get CPU: %v, Memory: %v", newStats.cpuUsage, newStats.memoryUsage)
 	// Compute Network IOPS. IOPS = (newIO - lastIO) / duration_time
 	newNetworkStat := statType{
 		time: newStats.netIOStats.time,
@@ -409,15 +457,20 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		tx:   lastStats.netIOStats.tx,
 		name: lastStats.netIOStats.name,
 	}
-	networkIOPS := 1e9 * float64(newNetworkStat.rx + newNetworkStat.tx -
-		lastNetworkStat.rx - lastNetworkStat.tx) /
+	networkRxBps := 1e9 * float64(newNetworkStat.rx - lastNetworkStat.rx) /
 		float64(newNetworkStat.time.UnixNano() - lastNetworkStat.time.UnixNano())
-	if networkIOPS < 0 {
+	networkTxBps := 1e9 * float64(newNetworkStat.tx - lastNetworkStat.tx) /
+		float64(newNetworkStat.time.UnixNano() - lastNetworkStat.time.UnixNano())
+	if networkRxBps < 0 {
 		glog.Errorf("get network iops error, a negative value, ignore it")
-		networkIOPS = 0
+		networkRxBps = 0
 	}
-	glog.Infof("get network %s bps: %v Bytes/s\n",
-		newNetworkStat.name, int(networkIOPS))
+	if networkTxBps < 0 {
+		glog.Errorf("get network iops error, a negative value, ignore it")
+		networkTxBps = 0
+	}
+	glog.V(10).Infof("get network %s Rx bps: %v Bytes/s, Tx bps: %v Bytes/s \n",
+		newNetworkStat.name, int(networkRxBps), int(networkTxBps))
 
 	// Compute Disk IOPS
 	newDiskIoStat := statType{
@@ -438,22 +491,29 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		glog.Errorf("get disk iops error, a negative value, ignore it")
 		diskIOPS = 0
 	}
-	glog.Infof("get disk %s, iops: %v\n",
-		newDiskIoStat.name, int(diskIOPS))
+	glog.V(10).Infof("get disk %s, iops: %v\n", newDiskIoStat.name, int(diskIOPS))
 
-	if diskIOPS > float64(c.diskIoTotal) * c.taintThreshold {
+	if diskIOPS > float64(c.diskIoTotal) * c.taintThreshold["DiskIo"] {
 			glog.Infof("disk %s out of limits, iops: %v", newDiskIoStat.name, int(diskIOPS))
 			c.nodeCondition.DiskIOAvailable = false
 	} else {
 		c.nodeCondition.DiskIOAvailable = true
 	}
 
-	if networkIOPS > float64(c.networkIoTotal) * c.taintThreshold {
-		glog.Infof("network %s out of limis, iops: %v", newNetworkStat.name, int(networkIOPS))
-		c.nodeCondition.NetworkIOAvailabel = false
+	// sum all network interfaces together
+	if networkRxBps > float64(len(c.networkInterfaces)) * float64(c.networkIoTotal) * c.taintThreshold["NetworkIo"]  {
+		glog.Infof("network %s out of limis, Rx bps: %v", newNetworkStat.name, int(networkRxBps))
+		c.nodeCondition.NetworkRxAvailabel = false
 	} else {
-		c.nodeCondition.NetworkIOAvailabel = true
+		c.nodeCondition.NetworkRxAvailabel = true
 	}
+	if networkTxBps > float64(len(c.networkInterfaces)) * float64(c.networkIoTotal) * c.taintThreshold["NetworkIo"]  {
+		glog.Infof("network %s out of limis, Tx bps: %v", newNetworkStat.name, int(networkTxBps))
+		c.nodeCondition.NetworkTxAvailabel = false
+	} else {
+		c.nodeCondition.NetworkTxAvailabel = true
+	}
+
 
 	return &c.nodeCondition
 }
@@ -467,7 +527,7 @@ func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo
 	}
 
 	// Get lower priority pod, if autoEvict
-	pods, err := c.client.GetLowerPriorityPods()
+	pods, err := c.client.GetLowerPriorityPods(c.lowPriorityThreshold)
 	if err != nil {
 		return nil, isEvict, "", err
 	}
@@ -492,7 +552,7 @@ func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo
 func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (bool, string) {
 	// check if it is evicting
 	priority := types.NeedEvict
-	if len(pods) != 0 {
+	if len(pods) != 0 && c.autoEvict {
 		for _, pod := range pods {
 			if pod.Name == c.podToEvict.Name && pod.Namespace == c.podToEvict.Namespace {
 				return true, priority
@@ -502,6 +562,7 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 	// compute and get the evil pod
 	if evictType == types.DiskIO {
 		evilValue := 0.0
+		weight := 0.0
 		evilPod := types.PodInfo{}
 		if len(pods) != 0 {
 			for _, pod := range pods {
@@ -511,14 +572,22 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 				iops := 1e9 * float64(newPodDiskStats.rx + newPodDiskStats.tx -
 					lastPodDiskStats.rx - lastPodDiskStats.tx) /
 					float64(newPodDiskStats.time.UnixNano() - lastPodDiskStats.time.UnixNano())
-				if iops > evilValue {
-					evilValue = iops
+				// choose the bigger weight
+				if pod.Priority == 0 {
+					weight = iops
+				} else {
+					weight = iops / float64(pod.Priority)
+				}
+
+				if weight > evilValue {
+					evilValue = weight
 					evilPod.Name = pod.Name
 					evilPod.Namespace = pod.Namespace
+					evilPod.Priority = pod.Priority
 				}
 			}
 			priority = types.NeedEvict
-			glog.Infof("get evil pod: %v, iops: %v from low priority pods, diskio busy", evilPod.Name, evilValue)
+			glog.Infof("get evil pod: %v, iops: %v, priority: %v, diskio busy", evilPod.Name, evilValue, evilPod.Priority)
 		}
 		// find no pod consume these resources
 		if evilPod.Name == "" {
@@ -541,24 +610,40 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			glog.Infof("get evil pod: %v, iops: %v from other pods, diskio busy", evilPod.Name, evilValue)
 		}
 		c.podToEvict = evilPod
-	} else if evictType == types.NetworkIO {
+	} else if evictType == types.NetworkRxBusy || evictType == types.NetworkTxBusy {
 		evilValue := 0.0
+		weight := 0.0
 		evilPod := types.PodInfo{}
 		if len(pods) != 0 {
 			for _, pod := range pods {
+				bps := 0.0
 				keyName := pod.Namespace + "." + pod.Name
 				newPodNetStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].netIOStats
 				lastPodNetStats := c.nodeStats[statsBufferLen - 2].podStats[keyName].netIOStats
-				iops := 1e9 * float64(newPodNetStats.rx + newPodNetStats.tx - lastPodNetStats.rx - lastPodNetStats.tx) /
-					float64(newPodNetStats.time.UnixNano() - lastPodNetStats.time.UnixNano())
-				if iops > evilValue {
-					evilValue = iops
+				if evictType == types.NetworkTxBusy {
+					bps = 1e9 * float64(newPodNetStats.tx - lastPodNetStats.tx) /
+						float64(newPodNetStats.time.UnixNano() - lastPodNetStats.time.UnixNano())
+				} else {
+					bps = 1e9 * float64(newPodNetStats.rx - lastPodNetStats.rx) /
+						float64(newPodNetStats.time.UnixNano() - lastPodNetStats.time.UnixNano())
+				}
+
+				// choose the bigger weight
+				if pod.Priority == 0 {
+					weight = bps
+				} else {
+					weight = bps / float64(pod.Priority)
+				}
+
+				if weight > evilValue {
+					evilValue = weight
 					evilPod.Name = pod.Name
 					evilPod.Namespace = pod.Namespace
+					evilPod.Priority = pod.Priority
 				}
 			}
 			priority = types.NeedEvict
-			glog.Infof("get evil pod: %v, iops: %v from low priority pods, network busy", evilPod.Name, evilValue)
+			glog.Infof("get evil pod: %v, bps: %v, priority: %v, network busy", evilPod.Name, evilValue, evilPod.Priority)
 		}
 		if evilPod.Name == "" {
 			for keyName, pod := range c.nodeStats[statsBufferLen - 1].podStats {
@@ -582,13 +667,20 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 		c.podToEvict = evilPod
 	} else if evictType == types.CPUBusy {
 		evilValue := 0.0
+		weight := 0.0
 		evilPod := types.PodInfo{}
 		if len(pods) != 0 {
 			for _, pod := range pods {
 				keyName := pod.Namespace + "." + pod.Name
 				cpuStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].cpuUsage
-				if cpuStats > evilValue {
-					evilValue = cpuStats
+				// choose the bigger weight
+				if pod.Priority == 0 {
+					weight = cpuStats
+				} else {
+					weight = cpuStats / float64(pod.Priority)
+				}
+				if weight > evilValue {
+					evilValue = weight
 					evilPod.Name = pod.Name
 					evilPod.Namespace = pod.Namespace
 				}
@@ -606,15 +698,24 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			}
 			priority = types.EvictCandidate
 		}
+		glog.Infof("get evil pod: %v, cpu: %v", evilPod.Name, evilValue)
+		c.podToEvict = evilPod
 	} else if evictType == types.MemBusy{
 		evilValue := 0.0
+		weight := 0.0
 		evilPod := types.PodInfo{}
 		if len(pods) != 0 {
 			for _, pod := range pods {
 				keyName := pod.Namespace + "." + pod.Name
 				memStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].memoryUsage
-				if float64(memStats) > evilValue {
-					evilValue = float64(memStats)
+				// choose the bigger weight
+				if pod.Priority == 0 {
+					weight = float64(memStats)
+				} else {
+					weight = float64(memStats) / float64(pod.Priority)
+				}
+				if weight > evilValue {
+					evilValue = weight
 					evilPod.Name = pod.Name
 					evilPod.Namespace = pod.Namespace
 				}
@@ -632,7 +733,8 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			}
 			priority = types.EvictCandidate
 		}
+		glog.Infof("get evil pod: %v, memory: %v", evilPod.Name, evilValue)
+		c.podToEvict = evilPod
 	}
-
 	return false, priority
 }

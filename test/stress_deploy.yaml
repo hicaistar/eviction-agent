@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:
+    deploy-stress
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: deploy-stress
+  template:
+    metadata:
+      labels:
+        app: deploy-stress
+      name:
+        stress
+    spec:
+      priority: 7
+      containers:
+      - image: progrium/stress:latest
+        imagePullPolicy: IfNotPresent
+        name: stress
+        command: ["sleep", "3600"]

@@ -3,6 +3,7 @@ package options
 import (
 	"os"
 	"fmt"
+	"github.com/golang/glog"
 )
 
 type EvictionAgentOptions struct {
@@ -12,6 +13,8 @@ type EvictionAgentOptions struct {
 	PolicyConfigFile string
 	// KubeconfigFile specifies the path to kubeconfig file.
 	KubeconfigFile string
+	// LogDir specifies the path to log file
+	LogDir string
 	// NodeName is the node name used to communicate with Kubernetes ApiServer.
 	NodeName string
 }
@@ -27,13 +30,32 @@ func (eao *EvictionAgentOptions) SetNodeNameOrDie() {
 	// downward api or user defined exported environment variable.
 	eao.NodeName = os.Getenv("NODE_NAME")
 	if eao.NodeName == "" {
-		panic(fmt.Errorf("Failed to get node name from environment"))
+		glog.Errorf("Failed to get node node from environment")
+		panic(fmt.Errorf("failed to get node name from environment"))
 	}
 }
 
 func (eao *EvictionAgentOptions) SetPolicyConfigFileOrDie() {
 	eao.PolicyConfigFile = os.Getenv("POLICY_CONFIG_FILE")
 	if eao.PolicyConfigFile == "" {
-		panic(fmt.Errorf("Failed to get policy configuration file"))
+		glog.Errorf("Failed to get policy configure file")
+		panic(fmt.Errorf("failed to get policy configuration file"))
+	}
+}
+
+func(eao *EvictionAgentOptions) SetLogDirOrDie() {
+	eao.LogDir = os.Getenv("LOG_DIR")
+	if eao.LogDir == "" {
+		glog.Errorf("Failed to get log dir configure")
+		panic(fmt.Errorf("failed to get log dir configure"))
+	}
+	if _, err := os.Stat(eao.LogDir); err != nil {
+		if os.IsNotExist(err) {
+			err := os.Mkdir(eao.LogDir, os.ModePerm)
+			if err != nil {
+				glog.Errorf("Failed to create log dir: %v, error: %v", eao.LogDir, err)
+				panic(err)
+			}
+		}
 	}
 }

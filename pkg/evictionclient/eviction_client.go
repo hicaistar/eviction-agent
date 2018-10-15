@@ -31,7 +31,7 @@ type Client interface {
 	// EvictOnePod evict one pod
 	EvictOnePod(*types.PodInfo) error
 	// GetLowerPriorityPods
-	GetLowerPriorityPods() ([]types.PodInfo, error)
+	GetLowerPriorityPods(int) ([]types.PodInfo, error)
 	// AddEvictAnnotationToPod
 	AnnotatePod(podInfo *types.PodInfo, priority string, action string) error
 	// GetIOPSTotalFromAnnotations
@@ -132,12 +132,12 @@ func (c evictionClient) GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal
 			}
 			nodeIOPSTotal.DiskIOPSTotal = int32(v)
 		}
-		if key == types.NodeNetworkIOPSTotal {
+		if key == types.NodeNetworkBPSTotal {
 			v, err := strconv.ParseInt(value, 10, 32)
 			if err != nil {
 				return nil, err
 			}
-			nodeIOPSTotal.NetworkIOPSTotal = int32(v)
+			nodeIOPSTotal.NetworkBPSTotal = int32(v)
 		}
 	}
 	// Get CPU and Memory form node status
@@ -258,7 +258,7 @@ func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
 }
 
 // GetLowerPriorityPods return pods which are set low priority
-func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
+func (c *evictionClient) GetLowerPriorityPods(lowPriorityThreshold int) ([]types.PodInfo, error) {
 	var pods []types.PodInfo
 	options := metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", c.nodeName),
@@ -270,19 +270,22 @@ func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
 	}
 	for _, pod := range podLists.Items {
 		// default is High priority
-		priority := types.HighPriority
+		priority := types.LowestPriority
 		if pod.Spec.Priority != nil {
 			priority = int(*pod.Spec.Priority)
+		} else {
+			// TODO: should we take them as lowest?
+			continue
 		}
-		glog.V(10).Infof("Get pod priority: %v", priority)
-		//if priority == types.LowPriority {
-		// TODO: test for code, remove it.
-		if pod.Namespace == "default" {
+
+		if priority <= lowPriorityThreshold && priority > 0 {
 			newPod := types.PodInfo{
 				Name:      pod.Name,
 				Namespace: pod.Namespace,
+				Priority:  priority,
 			}
 			pods = append(pods, newPod)
+			glog.Infof("Get low priority pod: %v priority: %v", pod.Name, priority)
 		}
 	}
 	return pods, nil
@@ -325,6 +328,7 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	}
 	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name, k8stypes.StrategicMergePatchType, patchBytes)
 
+	glog.Infof("Annotate pod: %v, action:%v", podInfo.Name, action)
 	return err
 }
 

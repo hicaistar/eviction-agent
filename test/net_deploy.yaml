@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:
+    deploy-net
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: deploy-net
+  template:
+    metadata:
+      labels:
+        app: deploy-net
+      name:
+        network
+    spec:
+      priority: 6
+      containers:
+      - image: networkstatic/iperf3:latest
+        imagePullPolicy: IfNotPresent
+        name: iperf
+        command: ["sleep", "3600"]

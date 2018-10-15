@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:
+    deploy-disk
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: deploy-disk
+  template:
+    metadata:
+      labels:
+        app: deploy-disk
+      name:
+        disk-test
+    spec:
+      priority: 5
+      containers:
+      - image: busybox
+        imagePullPolicy: IfNotPresent
+        name: busybox
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do dd if=/dev/zero of=./out bs=1M count=100;done"]

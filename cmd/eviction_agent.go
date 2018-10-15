@@ -14,13 +14,15 @@ import (
 
 func main() {
 	rand.Seed(time.Now().UTC().UnixNano())
-	flag.Set("logtostderr", "true")
-	flag.Set("stderrthreshold", "INFO")
-	flag.Parse()
 
+	// Init from environment
 	eao := options.NewEvictionAgentOptions()
 	eao.SetNodeNameOrDie()
 	eao.SetPolicyConfigFileOrDie()
+	eao.SetLogDirOrDie()
+
+	flag.Set("log_dir", eao.LogDir)
+	flag.Parse()
 
 	glog.Infof("Start to run eviction agent on %v...\n", eao.NodeName)
 

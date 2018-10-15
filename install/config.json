@@ -1,9 +1,13 @@
 {
   "untaintGracePeriod": 5,
   "autoEvictFlag": true,
-  "networkInterface": "eth0",
-  "networkIOPSTotal": 10000,
-  "diskIOPSTotal": 10000,
+  "networkInterfaces": ["eth0","ens4"],
   "diskDevName": "",
-  "taintThreshold": 0.9
+  "taintThreshold": {
+    "CPU": 0.9,
+    "Memory": 0.9,
+    "DiskIo": 0.9,
+    "NetworkIo": 0.9
+  },
+  "lowPriorityThreshold": 10
 }

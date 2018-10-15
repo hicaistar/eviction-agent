@@ -13,7 +13,6 @@ import (
 const (
 	// updatePeriod is the period
 	taintUpdatePeriod = 30 * time.Second
-	taintGracePeriod = 5 * time.Minute
 )
 
 type EvictionManager interface {
@@ -25,6 +24,7 @@ type evictionManager struct {
 	conditionManager    condition.ConditionManager
 	evictChan           chan string
 	nodeTaint           types.NodeTaintInfo
+	unTaintGracePeriod  time.Duration
 	lastTaintDiskIOTime time.Time
 	lastTaintNetIOTime  time.Time
 	lastTaintCPUTime    time.Time
@@ -94,6 +94,7 @@ func (e *evictionManager) taintProcess() {
 	for {
 		// wait for some second
 		time.Sleep(taintUpdatePeriod)
+		unTaintPeriod := e.conditionManager.GetUnTaintGracePeriod()
 		// get taint condition
 		e.nodeTaint, err = e.client.GetTaintConditions()
 		if err != nil {
@@ -105,7 +106,7 @@ func (e *evictionManager) taintProcess() {
 		condition := e.conditionManager.GetNodeCondition()
 
 		// node is in good condition currently
-		if condition.NetworkIOAvailabel && condition.DiskIOAvailable &&
+		if condition.NetworkRxAvailabel  && condition.NetworkTxAvailabel && condition.DiskIOAvailable &&
 			condition.CPUAvailable && condition.MemoryAvailable &&
 			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO && !e.nodeTaint.CPU && !e.nodeTaint.Memory {
 			// node is in good condition, there is no need to taint or un-taint
@@ -123,7 +124,7 @@ func (e *evictionManager) taintProcess() {
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintCPUTime)
 				glog.Infof("last taint duration: %v\n", duration)
-				if duration.Minutes() > taintGracePeriod.Minutes() {
+				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.CPUBusy, "UnTaint")
 					glog.Infof("Untaint node %s", types.CPUBusy)
 					if err != nil {
@@ -158,7 +159,7 @@ func (e *evictionManager) taintProcess() {
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintMemTime)
 				glog.Infof("last taint duration: %v\n", duration)
-				if duration.Minutes() > taintGracePeriod.Minutes() {
+				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.MemBusy, "UnTaint")
 					glog.Infof("Untaint node %s", types.MemBusy)
 					if err != nil {
@@ -193,7 +194,7 @@ func (e *evictionManager) taintProcess() {
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintDiskIOTime)
 				glog.Infof("last taint duration: %v\n", duration)
-				if duration.Minutes() > taintGracePeriod.Minutes() {
+				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.DiskIO, "UnTaint")
 					glog.Infof("Untaint node %s", types.DiskIO)
 					if err != nil {
@@ -222,11 +223,11 @@ func (e *evictionManager) taintProcess() {
 		}
 
 		// NetworkIO condition process
-		if condition.NetworkIOAvailabel {
+		if condition.NetworkRxAvailabel && condition.NetworkTxAvailabel {
 			if e.nodeTaint.NetworkIO {
 				duration := time.Now().Sub(e.lastTaintNetIOTime)
 				glog.Infof("last taint duration: %v\n", duration)
-				if duration.Minutes() > taintGracePeriod.Minutes() {
+				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.NetworkIO, "UnTaint")
 					if err != nil {
 						glog.Errorf("untaint node %s error: %v\n", types.NetworkIO, err)
@@ -249,7 +250,12 @@ func (e *evictionManager) taintProcess() {
 			// evict one pod to reclaim resources
 			if !isEvicted {
 				isEvicted = true
-				e.evictChan <- types.NetworkIO
+				if !condition.NetworkTxAvailabel {
+					e.evictChan <- types.NetworkRxBusy
+				} else if !condition.NetworkTxAvailabel {
+					e.evictChan <- types.NetworkTxBusy
+				}
+
 			}
 		}
 	}

@@ -76,7 +76,9 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: POLICY_CONFIG_FILE
-                value: "/tmp/config.json"
+              value: "/tmp/config.json"
+            - name: LOG_DIR
+              value: "/tmp/agent/"
           securityContext:
             privileged: true
           volumeMounts:
