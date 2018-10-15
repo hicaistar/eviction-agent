@@ -24,6 +24,8 @@ type NodeInfo struct {
 
 type ConditionStats struct {
 	NodeName        string
+	NodeCPUStats    *statsapi.CPUStats
+	NodeMemoryStats *statsapi.MemoryStats
 	NodeNetStats    *statsapi.NetworkStats
 	NodeDiskIoStats *statsapi.DiskioStats
 	PodStats        []statsapi.PodStats
@@ -68,6 +70,8 @@ func (kc *kubeletClient) collect() error {
 	kc.stats.NodeDiskIoStats = summary.Node.Diskio
 	kc.stats.PodStats = summary.Pods
 	kc.stats.NodeName = summary.Node.NodeName
+	kc.stats.NodeCPUStats = summary.Node.CPU
+	kc.stats.NodeMemoryStats = summary.Node.Memory
 	kc.stats.SysContainers = summary.Node.SystemContainers
 	return nil
 }

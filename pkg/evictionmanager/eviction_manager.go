@@ -27,6 +27,8 @@ type evictionManager struct {
 	nodeTaint           types.NodeTaintInfo
 	lastTaintDiskIOTime time.Time
 	lastTaintNetIOTime  time.Time
+	lastTaintCPUTime    time.Time
+	lastTaintMemTime    time.Time
 }
 
 // NewEvictionManager creates the eviction manager.
@@ -38,6 +40,8 @@ func NewEvictionManager(client evictionclient.Client, configFile string) Evictio
 		nodeTaint:        types.NodeTaintInfo{
 			DiskIO:    false,
 			NetworkIO: false,
+			CPU:       false,
+			Memory:    false,
 		},
 	}
 }
@@ -78,7 +82,7 @@ func (e *evictionManager) evictOnePod(evictType string) {
 	if isEvict {
 		err = e.client.EvictOnePod(podToEvict)
 	} else {
-		err = e.client.AddEvictAnnotationToPod(podToEvict, priority)
+		err = e.client.AnnotatePod(podToEvict, priority, "Add")
 	}
 	glog.Errorf("Evict pod error: %v", err)
 	return
@@ -91,7 +95,7 @@ func (e *evictionManager) taintProcess() {
 		// wait for some second
 		time.Sleep(taintUpdatePeriod)
 		// get taint condition
-		e.nodeTaint.NetworkIO, e.nodeTaint.DiskIO, err = e.client.GetTaintConditions()
+		e.nodeTaint, err = e.client.GetTaintConditions()
 		if err != nil {
 			glog.Errorf("get taint condition error: %v\n", err)
 			continue
@@ -100,12 +104,86 @@ func (e *evictionManager) taintProcess() {
 		// get node condition
 		condition := e.conditionManager.GetNodeCondition()
 
-		// node is good condition currently
+		// node is in good condition currently
 		if condition.NetworkIOAvailabel && condition.DiskIOAvailable &&
-			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO {
+			condition.CPUAvailable && condition.MemoryAvailable &&
+			!e.nodeTaint.DiskIO && !e.nodeTaint.NetworkIO && !e.nodeTaint.CPU && !e.nodeTaint.Memory {
 			// node is in good condition, there is no need to taint or un-taint
 			// there is no need to evict any pod either
+			// only need to clear all annotations on pods
+			e.client.ClearAllEvictAnnotations()
 			continue
+		}
+
+		isEvicted := false
+		// CPU condition process
+		if condition.CPUAvailable {
+			if e.nodeTaint.CPU {
+				// node is tainted CPU busy
+				// TODO: wait taintGraceTime
+				duration := time.Now().Sub(e.lastTaintCPUTime)
+				glog.Infof("last taint duration: %v\n", duration)
+				if duration.Minutes() > taintGracePeriod.Minutes() {
+					err = e.client.SetTaintConditions(types.CPUBusy, "UnTaint")
+					glog.Infof("Untaint node %s", types.CPUBusy)
+					if err != nil {
+						glog.Errorf("untaint node %s error: %v\n", types.CPUBusy, err)
+					}
+					// TODO: clear annotations
+				}
+			}
+		} else {
+			// node is in CPU busy
+			// update taint time
+			e.lastTaintCPUTime = time.Now()
+			if !e.nodeTaint.CPU {
+				// taint node, evict pod
+				glog.Infof("taint node %s ", types.CPUBusy)
+				err = e.client.SetTaintConditions(types.CPUBusy, "Taint")
+				if err != nil {
+					glog.Errorf("add taint %s error: %v", types.CPUBusy, err)
+				}
+			}
+			// evict one pod to reclaim resources
+			if !isEvicted {
+				isEvicted = true
+				e.evictChan <- types.CPUBusy
+			}
+		}
+
+		// Memory condition process
+		if condition.MemoryAvailable {
+			if e.nodeTaint.Memory {
+				// node is tainted Memory busy
+				// TODO: wait taintGraceTime
+				duration := time.Now().Sub(e.lastTaintMemTime)
+				glog.Infof("last taint duration: %v\n", duration)
+				if duration.Minutes() > taintGracePeriod.Minutes() {
+					err = e.client.SetTaintConditions(types.MemBusy, "UnTaint")
+					glog.Infof("Untaint node %s", types.MemBusy)
+					if err != nil {
+						glog.Errorf("untaint node %s error: %v\n", types.MemBusy, err)
+					}
+					// TODO: clear annotations
+				}
+			}
+		} else {
+			// node is in Memory busy
+			// update taint time
+			e.lastTaintMemTime = time.Now()
+			if !e.nodeTaint.Memory {
+				// taint node, evict pod
+				glog.Infof("taint node %s ", types.MemBusy)
+				err = e.client.SetTaintConditions(types.MemBusy, "Taint")
+				if err != nil {
+					glog.Errorf("add taint %s error: %v", types.MemBusy, err)
+				}
+			}
+			// evict one pod to reclaim resources
+			if !isEvicted {
+				isEvicted = true
+				e.evictChan <- types.MemBusy
+			}
 		}
 
 		// DiskIO condition process
@@ -121,6 +199,7 @@ func (e *evictionManager) taintProcess() {
 					if err != nil {
 						glog.Errorf("untaint node %s error: %v\n", types.DiskIO, err)
 					}
+					// TODO: clear annotations
 				}
 			}
 		} else {
@@ -136,7 +215,10 @@ func (e *evictionManager) taintProcess() {
 				}
 			}
 			// evict one pod to reclaim resources
-			e.evictChan <- types.DiskIO
+			if !isEvicted {
+				isEvicted = true
+				e.evictChan <- types.DiskIO
+			}
 		}
 
 		// NetworkIO condition process
@@ -149,6 +231,7 @@ func (e *evictionManager) taintProcess() {
 					if err != nil {
 						glog.Errorf("untaint node %s error: %v\n", types.NetworkIO, err)
 					}
+					// TODO: clear annotations
 					glog.Infof("untaint node %s\n", types.NetworkIO)
 				}
 			}
@@ -164,7 +247,10 @@ func (e *evictionManager) taintProcess() {
 				}
 			}
 			// evict one pod to reclaim resources
-			e.evictChan <- types.NetworkIO
+			if !isEvicted {
+				isEvicted = true
+				e.evictChan <- types.NetworkIO
+			}
 		}
 	}
 }

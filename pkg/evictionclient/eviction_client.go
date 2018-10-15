@@ -1,18 +1,18 @@
 package evictionclient
 
 import (
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"github.com/golang/glog"
 
+	"k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/api/core/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
 
 	"eviction-agent/cmd/options"
 	"eviction-agent/pkg/summary"
@@ -23,25 +23,27 @@ import (
 // Client is the interface of eviction client
 type Client interface {
 	// GetTaintConditions get all specific taint conditions of current node
-	GetTaintConditions() (bool, bool, error)
+	GetTaintConditions() (types.NodeTaintInfo, error)
 	// SetTaintConditions set or update taint conditions of current node
-	SetTaintConditions(string, string) (error)
+	SetTaintConditions(string, string) error
 	// GetSummaryStats get node/pod stats from summary API
 	GetSummaryStats() (*summary.ConditionStats, error)
 	// EvictOnePod evict one pod
-	EvictOnePod(*types.PodInfo) (error)
+	EvictOnePod(*types.PodInfo) error
 	// GetLowerPriorityPods
 	GetLowerPriorityPods() ([]types.PodInfo, error)
 	// AddEvictAnnotationToPod
-	AddEvictAnnotationToPod(podInfo *types.PodInfo, priority string) error
+	AnnotatePod(podInfo *types.PodInfo, priority string, action string) error
 	// GetIOPSTotalFromAnnotations
-	GetIOPSTotalFromAnnotations() (*types.NodeIOPSTotal, error)
+	GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal, error)
+	//ClearAllEvictAnnotations
+	ClearAllEvictAnnotations() error
 }
 
 type evictionClient struct {
-	nodeName string
-	client   *kubernetes.Clientset
-	nodeInfo summary.NodeInfo
+	nodeName   string
+	client     *kubernetes.Clientset
+	nodeInfo   summary.NodeInfo
 	summaryApi summary.SummaryStatsApi
 }
 
@@ -87,8 +89,8 @@ func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
 	}
 
 	c.nodeInfo = summary.NodeInfo{
-		Name: c.nodeName,
-		Port: 10255,  // get port from node?
+		Name:           c.nodeName,
+		Port:           10255, // get port from node?
 		ConnectAddress: ipAddr,
 	}
 
@@ -113,13 +115,14 @@ func (c *evictionClient) getNodeAddress() (string, error) {
 	return "", fmt.Errorf("node had no addresses that matched\n")
 }
 
-func (c evictionClient) GetIOPSTotalFromAnnotations() (*types.NodeIOPSTotal, error) {
+func (c evictionClient) GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal, error) {
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
 		glog.Errorf("get node taint condition error %v", err)
 		return nil, err
 	}
 	nodeIOPSTotal := types.NodeIOPSTotal{}
+	// Get disk IOPS and network IOPS from annotations
 	annotations := node.Annotations
 	for key, value := range annotations {
 		if key == types.NodeDiskIOPSTotal {
@@ -137,20 +140,39 @@ func (c evictionClient) GetIOPSTotalFromAnnotations() (*types.NodeIOPSTotal, err
 			nodeIOPSTotal.NetworkIOPSTotal = int32(v)
 		}
 	}
+	// Get CPU and Memory form node status
+	capacity := node.Status.Capacity
+	cpu, ok := capacity.Cpu().AsInt64()
+	if ok {
+		nodeIOPSTotal.CPUTotal = cpu
+	} else {
+		return nil, fmt.Errorf("Get cpu from node status error")
+	}
+	memory, ok := capacity.Memory().AsInt64()
+	if ok {
+		nodeIOPSTotal.MemoryTotal = memory
+	} else {
+		return nil, fmt.Errorf("Get memory from node status error")
+	}
+
 	return &nodeIOPSTotal, nil
 }
 
-func (c *evictionClient) GetTaintConditions() (bool, bool, error) {
-	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
-	if err != nil {
-		glog.Errorf("get node taint condition error %v", err)
-		return false, false, err
-	}
-	taints := node.Spec.Taints
+func (c *evictionClient) GetTaintConditions() (types.NodeTaintInfo, error) {
 	nodeTaintInfo := types.NodeTaintInfo{
 		DiskIO:    false,
 		NetworkIO: false,
+		CPU:       false,
+		Memory:    false,
 	}
+
+	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
+	if err != nil {
+		glog.Errorf("get node taint condition error %v", err)
+		return nodeTaintInfo, err
+	}
+	taints := node.Spec.Taints
+
 	for _, t := range taints {
 		if t.Key == types.NetworkIO {
 			nodeTaintInfo.NetworkIO = true
@@ -158,11 +180,17 @@ func (c *evictionClient) GetTaintConditions() (bool, bool, error) {
 		if t.Key == types.DiskIO {
 			nodeTaintInfo.DiskIO = true
 		}
+		if t.Key == types.CPUBusy {
+			nodeTaintInfo.CPU = true
+		}
+		if t.Key == types.MemBusy {
+			nodeTaintInfo.Memory = true
+		}
 	}
-	return nodeTaintInfo.NetworkIO, nodeTaintInfo.DiskIO, nil
+	return nodeTaintInfo, nil
 }
 
-func (c* evictionClient) SetTaintConditions(taintKey string, action string) error {
+func (c *evictionClient) SetTaintConditions(taintKey string, action string) error {
 	oldNode, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
 		glog.Errorf("get node taint condition error %v", err)
@@ -179,8 +207,8 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 
 	if action == "Taint" {
 		currentTaint := v1.Taint{
-			Key: taintKey,
-			Value: "True",
+			Key:    taintKey,
+			Value:  "True",
 			Effect: "NoSchedule",
 		}
 		newTaints = append(newTaints, currentTaint)
@@ -207,7 +235,7 @@ func (c* evictionClient) SetTaintConditions(taintKey string, action string) erro
 	return err
 }
 
-func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error){
+func (c *evictionClient) GetSummaryStats() (*summary.ConditionStats, error) {
 	stats, err := c.summaryApi.GetSummaryStats()
 	return stats, err
 }
@@ -218,10 +246,9 @@ func (c *evictionClient) EvictOnePod(podToEvict *types.PodInfo) error {
 		return fmt.Errorf("pod name should not be empty")
 	}
 	eviction := policyv1.Eviction{
-		TypeMeta: metav1.TypeMeta{
-		},
+		TypeMeta: metav1.TypeMeta{},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: podToEvict.Name,
+			Name:      podToEvict.Name,
 			Namespace: podToEvict.Namespace,
 		},
 		DeleteOptions: &metav1.DeleteOptions{},
@@ -262,7 +289,7 @@ func (c *evictionClient) GetLowerPriorityPods() ([]types.PodInfo, error) {
 }
 
 // AddEvictAnnotationToPod add an evict annotation on pod
-func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo, priority string) error {
+func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, action string) error {
 	if podInfo.Name == "" {
 		return fmt.Errorf("pod name should not be empty")
 	}
@@ -281,7 +308,11 @@ func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo, priorit
 		glog.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
 		newPod.Annotations = make(map[string]string)
 	}
-	newPod.Annotations[priority] = "true"
+	if action == "Add" {
+		newPod.Annotations[priority] = "true"
+	} else if action == "Delete" {
+		delete(newPod.Annotations, priority)
+	}
 
 	newData, err := json.Marshal(newPod)
 	if err != nil {
@@ -292,7 +323,36 @@ func (c *evictionClient) AddEvictAnnotationToPod(podInfo *types.PodInfo, priorit
 	if err != nil {
 		return fmt.Errorf("failed to create patch for pod %v", podInfo.Name)
 	}
-	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name,k8stypes.StrategicMergePatchType, patchBytes)
+	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name, k8stypes.StrategicMergePatchType, patchBytes)
 
 	return err
+}
+
+// ClearAllEvictAnnotations clear evict annotations from pod if node is not in bad condition
+func (c *evictionClient) ClearAllEvictAnnotations() error {
+	options := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", c.nodeName),
+	}
+	podLists, err := c.client.CoreV1().Pods(metav1.NamespaceAll).List(options)
+	if err != nil {
+		glog.Errorf("List pods on %s error\n", c.nodeName)
+		return err
+	}
+
+	for _, pod := range podLists.Items {
+		for k := range pod.Annotations {
+			podInfo := types.PodInfo{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			}
+			if k == types.EvictCandidate {
+				c.AnnotatePod(&podInfo, k, "Delete")
+			}
+			if k == types.NeedEvict {
+				c.AnnotatePod(&podInfo, k, "Delete")
+			}
+		}
+	}
+
+	return nil
 }

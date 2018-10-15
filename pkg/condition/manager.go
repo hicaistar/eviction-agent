@@ -27,6 +27,8 @@ const (
 type NodeCondition struct {
 	DiskIOAvailable    bool
 	NetworkIOAvailabel bool
+	CPUAvailable       bool
+	MemoryAvailable    bool
 }
 
 type statType struct {
@@ -40,6 +42,8 @@ type podStatType struct {
 	time        time.Time
 	name        string
 	namespace   string
+	cpuUsage    float64
+	memoryUsage uint64
 	netIOStats  statType
 	diskIOStats statType
 }
@@ -48,6 +52,8 @@ type nodeStatsType struct {
 	time        time.Time
 	netIOStats  statType
 	diskIOStats statType
+	cpuUsage    float64
+	memoryUsage uint64
 	podStats    map[string]podStatType  // key=PodNamespace.Name
 }
 
@@ -70,8 +76,12 @@ type conditionManager struct {
 	nodeStats           []nodeStatsType
 	autoEvict           bool
 	networkInterface    string
+	diskDevName         string
 	diskIoTotal         int32
 	networkIoTotal      int32
+	invalidEvictCount   int32
+	cpuTotal            int64
+	memTotal            int64
 }
 
 type policyConfig struct {
@@ -82,7 +92,7 @@ type policyConfig struct {
 	NetworkInterface   string  `json:"networkInterface"`
 	NetworkIOPSTotal   int32   `json:"networkIOPSTotal"`
 	DiskDevName        string  `json:"diskDevName"`
-	DiskIOPSTotal        int32   `json:"diskIOPSTotal"`
+	DiskIOPSTotal      int32   `json:"diskIOPSTotal"`
 }
 
 // NewConditionManager creates a condition manager
@@ -106,18 +116,26 @@ func (c *conditionManager) Start() error {
 	glog.Infof("Start condition manager\n")
 
 	// get node iops total value
-	nodeIOPSTotal, err := c.client.GetIOPSTotalFromAnnotations()
+	nodeIOPSTotal, err := c.client.GetResourcesTotalFromAnnotations()
 	if err != nil {
+		glog.Errorf("Get resource from node error: %v", err)
 		return err
 	}
 	c.networkIoTotal = nodeIOPSTotal.NetworkIOPSTotal
 	c.diskIoTotal = nodeIOPSTotal.DiskIOPSTotal
-	glog.Infof("Get total value, networkIOPS: %v, diskIOPS: %v",c.networkIoTotal, c.diskIoTotal)
+	c.cpuTotal = nodeIOPSTotal.CPUTotal
+	c.memTotal = nodeIOPSTotal.MemoryTotal
+	glog.Infof("Get total value, networkIOPS: %v, diskIOPS: %v, cpu: %v, memory: %v",
+		c.networkIoTotal, c.diskIoTotal, c.cpuTotal, c.memTotal)
 
 	// load policy configuration
 	err = c.loadPolicyConfig()
 	if err != nil {
 		return err
+	}
+
+	if c.networkIoTotal == 0 || c.diskIoTotal == 0 {
+		return fmt.Errorf("IOPS config is not in pod annotations or configuration file.")
 	}
 
 	// watch policy configuration
@@ -179,6 +197,7 @@ func (c *conditionManager) loadPolicyConfig() error {
 	}
 
 	if config.DiskDevName != "" {
+		c.diskDevName = config.DiskDevName
 	}
 
 	if config.DiskIOPSTotal != 0 {
@@ -194,8 +213,9 @@ func (c *conditionManager) loadPolicyConfig() error {
 		c.networkInterface = config.NetworkInterface
 	}
 	c.autoEvict = config.AutoEvictFlag
-	glog.Infof("Get diskIoTotal: %v, taintThreshold: %v, network name: %v, networkIOTotal: %v, autoEvictFlag: %v",
-		c.diskIoTotal, c.taintThreshold, c.networkInterface, c.networkIoTotal, c.autoEvict)
+	glog.Infof("Get diskIoTotal: %v, taintThreshold: %v, network name: %v, " +
+		"networkIOTotal: %v, autoEvictFlag: %v, diskDevName: %v",
+		c.diskIoTotal, c.taintThreshold, c.networkInterface, c.networkIoTotal, c.autoEvict, c.diskDevName)
 
 	return nil
 }
@@ -215,14 +235,26 @@ func (c *conditionManager) syncStats() {
 		newNodeStats.podStats = make(map[string]podStatType)
 		newNodeStats.time = stats.NodeNetStats.Time.Time
 
+		// Get CPU and Memory stats
+		if stats.NodeCPUStats != nil {
+			if stats.NodeCPUStats.UsageNanoCores != nil {
+				newNodeStats.cpuUsage = float64(*stats.NodeCPUStats.UsageNanoCores) / 1e9
+			}
+		}
+		if stats.NodeMemoryStats != nil {
+			if stats.NodeMemoryStats.UsageBytes != nil {
+				newNodeStats.memoryUsage = *stats.NodeMemoryStats.UsageBytes
+			}
+		}
+		glog.V(10).Infof("Get cpu: %v, memory: %v Bytes.", newNodeStats.cpuUsage, newNodeStats.memoryUsage)
+
 		// Get Network IO stats, add it to nodeStats
-		// TODO: if specify network interface, get it from interface list, otherwise, we get the default: eth0
 		netStats := stats.NodeNetStats
 		for _, iface := range netStats.Interfaces {
 			net := statType{}
-			if iface.TxPackets != nil && iface.RxPackets != nil {
-				net.rx = *iface.TxPackets
-				net.tx = *iface.RxPackets
+			if iface.RxBytes != nil && iface.TxBytes != nil {
+				net.rx = *iface.RxBytes
+				net.tx = *iface.TxBytes
 			}
 			if iface.Name == c.networkInterface {
 				newNodeStats.netIOStats.time = netStats.Time.Time
@@ -233,18 +265,29 @@ func (c *conditionManager) syncStats() {
 		}
 
 		// Get all pods stats, add them to nodeStats. podStats := stats.PodStats
-		// TODO: add Disk IO stat to pod stats
 		podStats := stats.PodStats
 		for _, pod := range podStats {
 			diskStats := statType{}
+			// Sum all containers' stats together
 			// Maybe some pod doesn't has DiskIoStats, set them to ZERO
 			for _, container := range pod.Containers {
 				if container.Diskio != nil {
 					if container.Diskio.DiskIoStats != nil {
 						ioServiced := container.Diskio.DiskIoStats.IoServiced
-						if len(ioServiced) != 0 {
+						if c.diskDevName != "" {
+							// care about the specified name
+							diskStats.name = c.diskDevName
 							diskStats.time = pod.Diskio.Time.Time
-							diskStats.name = pod.Diskio.DiskIoStats.IoServiced[0].Device
+							for _, io := range ioServiced {
+								if io.Device == c.diskDevName {
+									diskStats.rx += io.Stats["Read"]
+									diskStats.tx += io.Stats["Write"]
+								}
+							}
+						} else if len(ioServiced) != 0 {
+							// choose the first one
+							diskStats.time = pod.Diskio.Time.Time
+							diskStats.name = ioServiced[0].Device
 							diskStats.rx += ioServiced[0].Stats["Read"]
 							diskStats.tx += ioServiced[0].Stats["Write"]
 						}
@@ -253,10 +296,10 @@ func (c *conditionManager) syncStats() {
 			}
 			netIoStats := statType{}
 			if pod.Network != nil {
-				if pod.Network.RxPackets != nil && pod.Network.TxPackets != nil &&
+				if pod.Network.RxBytes != nil && pod.Network.TxBytes != nil &&
 					pod.Network.Name == c.networkInterface {
-					netIoStats.rx = *pod.Network.RxPackets
-					netIoStats.tx = *pod.Network.TxPackets
+					netIoStats.rx = *pod.Network.RxBytes
+					netIoStats.tx = *pod.Network.TxBytes
 				}
 			}
 			podStat := podStatType{
@@ -275,15 +318,24 @@ func (c *conditionManager) syncStats() {
 			newNodeStats.podStats[keyName] = podStat
 		}
 
-		// TODO: if specify disk name, get it from device list, otherwise, we get the first one
+		// Get disk stats together, include system containers and user pods
 		newNodeStats.diskIOStats.time = stats.NodeDiskIoStats.Time.Time
-		// Add system container disk-io stats to node stats
+		// add system container disk-io stats to node stats
 		sysContainers := stats.SysContainers
 		for _, container := range sysContainers {
 			if container.Diskio != nil {
 				if container.Diskio.DiskIoStats != nil {
 					ioServiced := container.Diskio.DiskIoStats.IoServiced
-					if len(ioServiced) != 0 {
+					if c.diskDevName != "" {
+						// care about the specified name
+						newNodeStats.diskIOStats.name = c.diskDevName
+						for _, io := range ioServiced {
+							if io.Device == c.diskDevName {
+								newNodeStats.diskIOStats.rx += io.Stats["Read"]
+								newNodeStats.diskIOStats.tx += io.Stats["Write"]
+							}
+						}
+					} else if len(ioServiced) != 0 {
 						if name := ioServiced[0].Device; name != "" {
 							newNodeStats.diskIOStats.name = name
 						}
@@ -293,7 +345,7 @@ func (c *conditionManager) syncStats() {
 				}
 			}
 		}
-		// Add user pod disk-io stats to node stats
+		// add user pod disk-io stats to node stats
 		for _, pod := range newNodeStats.podStats {
 			newNodeStats.diskIOStats.rx += pod.diskIOStats.rx
 			newNodeStats.diskIOStats.tx += pod.diskIOStats.tx
@@ -329,18 +381,33 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 	if len(c.nodeStats) != statsBufferLen {
 		return &c.nodeCondition
 	}
+	newStats := c.nodeStats[statsBufferLen - 1]
+	lastStats := c.nodeStats[statsBufferLen - 2]
+	// CPU check
+	if newStats.cpuUsage < float64(c.cpuTotal) * c.taintThreshold {
+		c.nodeCondition.CPUAvailable = true
+	} else {
+		c.nodeCondition.CPUAvailable = false
+	}
+	// Memory check
+	if float64(newStats.memoryUsage) < float64(c.memTotal) * c.taintThreshold {
+		c.nodeCondition.MemoryAvailable = true
+	} else {
+		c.nodeCondition.MemoryAvailable = false
+	}
+	glog.Info("Get CPU: %v, Memory: %v", )
 	// Compute Network IOPS. IOPS = (newIO - lastIO) / duration_time
 	newNetworkStat := statType{
-		time: c.nodeStats[statsBufferLen - 1].netIOStats.time,
-		rx:   c.nodeStats[statsBufferLen - 1].netIOStats.rx,
-		tx:   c.nodeStats[statsBufferLen - 1].netIOStats.tx,
-		name: c.nodeStats[statsBufferLen - 1].netIOStats.name,
+		time: newStats.netIOStats.time,
+		rx:   newStats.netIOStats.rx,
+		tx:   newStats.netIOStats.tx,
+		name: newStats.netIOStats.name,
 	}
 	lastNetworkStat := statType{
-		time: c.nodeStats[statsBufferLen - 2].netIOStats.time,
-		rx:   c.nodeStats[statsBufferLen - 2].netIOStats.rx,
-		tx:   c.nodeStats[statsBufferLen - 2].netIOStats.tx,
-		name: c.nodeStats[statsBufferLen - 2].netIOStats.name,
+		time: lastStats.netIOStats.time,
+		rx:   lastStats.netIOStats.rx,
+		tx:   lastStats.netIOStats.tx,
+		name: lastStats.netIOStats.name,
 	}
 	networkIOPS := 1e9 * float64(newNetworkStat.rx + newNetworkStat.tx -
 		lastNetworkStat.rx - lastNetworkStat.tx) /
@@ -349,21 +416,21 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		glog.Errorf("get network iops error, a negative value, ignore it")
 		networkIOPS = 0
 	}
-	glog.Infof("get network %s iops: %v Packets/s\n",
+	glog.Infof("get network %s bps: %v Bytes/s\n",
 		newNetworkStat.name, int(networkIOPS))
 
 	// Compute Disk IOPS
 	newDiskIoStat := statType{
-		time: c.nodeStats[statsBufferLen - 1].diskIOStats.time,
-		rx:   c.nodeStats[statsBufferLen - 1].diskIOStats.rx,
-		tx:   c.nodeStats[statsBufferLen - 1].diskIOStats.tx,
-		name: c.nodeStats[statsBufferLen - 1].diskIOStats.name,
+		time: newStats.diskIOStats.time,
+		rx:   newStats.diskIOStats.rx,
+		tx:   newStats.diskIOStats.tx,
+		name: newStats.diskIOStats.name,
 	}
 	lastDiskIoStat := statType{
-		time: c.nodeStats[statsBufferLen - 2].diskIOStats.time,
-		rx:   c.nodeStats[statsBufferLen - 2].diskIOStats.rx,
-		tx:   c.nodeStats[statsBufferLen - 2].diskIOStats.tx,
-		name: c.nodeStats[statsBufferLen - 2].diskIOStats.name,
+		time: lastStats.diskIOStats.time,
+		rx:   lastStats.diskIOStats.rx,
+		tx:   lastStats.diskIOStats.tx,
+		name: lastStats.diskIOStats.name,
 	}
 	diskIOPS := 1e9 * float64(newDiskIoStat.rx + newDiskIoStat.tx - lastDiskIoStat.rx - lastDiskIoStat.tx) /
 		float64(newDiskIoStat.time.UnixNano() - lastDiskIoStat.time.UnixNano())
@@ -407,7 +474,6 @@ func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo
 
 	// if auto-evict and there are some lower priority pods, evict pod in agent.
 	if c.autoEvict {
-		glog.Infof("Config eviction-agent AUTO-EVICT")
 		if len(pods) != 0 {
 			isEvict = true
 		}
@@ -423,7 +489,7 @@ func (c *conditionManager) ChooseOnePodToEvict(evictType string) (*types.PodInfo
 }
 
 // getEvilPod pick the pod which consume the resource most
-func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (bool,string) {
+func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (bool, string) {
 	// check if it is evicting
 	priority := types.NeedEvict
 	if len(pods) != 0 {
@@ -437,7 +503,7 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 	if evictType == types.DiskIO {
 		evilValue := 0.0
 		evilPod := types.PodInfo{}
-		if len(pods) != 0  {
+		if len(pods) != 0 {
 			for _, pod := range pods {
 				keyName := pod.Namespace + "." + pod.Name
 				newPodDiskStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].diskIOStats
@@ -453,7 +519,9 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			}
 			priority = types.NeedEvict
 			glog.Infof("get evil pod: %v, iops: %v from low priority pods, diskio busy", evilPod.Name, evilValue)
-		} else {
+		}
+		// find no pod consume these resources
+		if evilPod.Name == "" {
 			for keyName, pod := range c.nodeStats[statsBufferLen - 1].podStats {
 				newPodDiskStats := pod.diskIOStats
 				lastStats, ok := c.nodeStats[statsBufferLen - 2 ].podStats[keyName]
@@ -476,7 +544,7 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 	} else if evictType == types.NetworkIO {
 		evilValue := 0.0
 		evilPod := types.PodInfo{}
-		if len(pods) != 0  {
+		if len(pods) != 0 {
 			for _, pod := range pods {
 				keyName := pod.Namespace + "." + pod.Name
 				newPodNetStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].netIOStats
@@ -491,7 +559,8 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			}
 			priority = types.NeedEvict
 			glog.Infof("get evil pod: %v, iops: %v from low priority pods, network busy", evilPod.Name, evilValue)
-		} else {
+		}
+		if evilPod.Name == "" {
 			for keyName, pod := range c.nodeStats[statsBufferLen - 1].podStats {
 				newPodNetStats := pod.netIOStats
 				lastStats, ok := c.nodeStats[statsBufferLen - 2 ].podStats[keyName]
@@ -511,6 +580,59 @@ func (c *conditionManager) getEvilPod(evictType string, pods []types.PodInfo) (b
 			glog.Infof("get evil pod: %v, iops: %v from other pods, network busy", evilPod.Name, evilValue)
 		}
 		c.podToEvict = evilPod
+	} else if evictType == types.CPUBusy {
+		evilValue := 0.0
+		evilPod := types.PodInfo{}
+		if len(pods) != 0 {
+			for _, pod := range pods {
+				keyName := pod.Namespace + "." + pod.Name
+				cpuStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].cpuUsage
+				if cpuStats > evilValue {
+					evilValue = cpuStats
+					evilPod.Name = pod.Name
+					evilPod.Namespace = pod.Namespace
+				}
+			}
+			priority = types.NeedEvict
+		}
+		if evilPod.Name == "" {
+			for _, pod := range c.nodeStats[statsBufferLen - 1].podStats {
+				cpuStats := pod.cpuUsage
+				if cpuStats > evilValue {
+					evilValue = cpuStats
+					evilPod.Name = pod.name
+					evilPod.Namespace = pod.namespace
+				}
+			}
+			priority = types.EvictCandidate
+		}
+	} else if evictType == types.MemBusy{
+		evilValue := 0.0
+		evilPod := types.PodInfo{}
+		if len(pods) != 0 {
+			for _, pod := range pods {
+				keyName := pod.Namespace + "." + pod.Name
+				memStats := c.nodeStats[statsBufferLen - 1].podStats[keyName].memoryUsage
+				if float64(memStats) > evilValue {
+					evilValue = float64(memStats)
+					evilPod.Name = pod.Name
+					evilPod.Namespace = pod.Namespace
+				}
+			}
+			priority = types.NeedEvict
+		}
+		if evilPod.Name == "" {
+			for _, pod := range c.nodeStats[statsBufferLen - 1].podStats {
+				memStats := pod.memoryUsage
+				if float64(memStats) > evilValue {
+					evilValue = float64(memStats)
+					evilPod.Name = pod.name
+					evilPod.Namespace = pod.namespace
+				}
+			}
+			priority = types.EvictCandidate
+		}
 	}
+
 	return false, priority
 }
