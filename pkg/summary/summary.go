@@ -66,6 +66,11 @@ func (kc *kubeletClient) collect() error {
 		glog.Errorf("get summary error: %v\n", err)
 		return err
 	}
+	if summary.Node.Network == nil || summary.Node.Diskio == nil ||
+		summary.Node.CPU==nil || summary.Node.Memory==nil || summary.Pods == nil {
+			return fmt.Errorf("Get summary nil data")
+	}
+
 	kc.stats.NodeNetStats = summary.Node.Network
 	kc.stats.NodeDiskIoStats = summary.Node.Diskio
 	kc.stats.PodStats = summary.Pods

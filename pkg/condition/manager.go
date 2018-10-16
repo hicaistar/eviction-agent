@@ -319,16 +319,24 @@ func (c *conditionManager) syncStats() {
 							diskStats.time = pod.Diskio.Time.Time
 							for _, io := range ioServiced {
 								if io.Device == c.diskDevName {
-									diskStats.rx += io.Stats["Read"]
-									diskStats.tx += io.Stats["Write"]
+									if v, ok := io.Stats["Read"]; ok {
+										diskStats.rx += v
+									}
+									if v, ok := io.Stats["Write"]; ok {
+										diskStats.tx += v
+									}
 								}
 							}
 						} else if len(ioServiced) != 0 {
 							// choose the first one
 							diskStats.time = pod.Diskio.Time.Time
 							diskStats.name = ioServiced[0].Device
-							diskStats.rx += ioServiced[0].Stats["Read"]
-							diskStats.tx += ioServiced[0].Stats["Write"]
+							if v, ok := ioServiced[0].Stats["Read"]; ok {
+								diskStats.rx += v
+							}
+							if v, ok := ioServiced[0].Stats["Write"]; ok {
+								diskStats.tx += v
+							}
 						}
 					}
 				}
@@ -379,16 +387,24 @@ func (c *conditionManager) syncStats() {
 						newNodeStats.diskIOStats.name = c.diskDevName
 						for _, io := range ioServiced {
 							if io.Device == c.diskDevName {
-								newNodeStats.diskIOStats.rx += io.Stats["Read"]
-								newNodeStats.diskIOStats.tx += io.Stats["Write"]
+								if v, ok := io.Stats["Read"]; ok {
+									newNodeStats.diskIOStats.rx += v
+								}
+								if v, ok := io.Stats["Write"]; ok {
+									newNodeStats.diskIOStats.tx += v
+								}
 							}
 						}
 					} else if len(ioServiced) != 0 {
 						if name := ioServiced[0].Device; name != "" {
 							newNodeStats.diskIOStats.name = name
 						}
-						newNodeStats.diskIOStats.rx += ioServiced[0].Stats["Read"]
-						newNodeStats.diskIOStats.tx += ioServiced[0].Stats["Write"]
+						if v, ok := ioServiced[0].Stats["Read"]; ok {
+							newNodeStats.diskIOStats.rx += v
+						}
+						if v, ok := ioServiced[0].Stats["Write"]; ok {
+							newNodeStats.diskIOStats.tx += v
+						}
 					}
 				}
 			}
@@ -443,7 +459,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 	} else {
 		c.nodeCondition.MemoryAvailable = false
 	}
-	glog.Infof("Get CPU: %v, Memory: %v", newStats.cpuUsage, newStats.memoryUsage)
+	glog.V(5).Infof("Get CPU: %v, Memory: %v", newStats.cpuUsage, newStats.memoryUsage)
 	// Compute Network IOPS. IOPS = (newIO - lastIO) / duration_time
 	newNetworkStat := statType{
 		time: newStats.netIOStats.time,
@@ -469,7 +485,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		glog.Errorf("get network iops error, a negative value, ignore it")
 		networkTxBps = 0
 	}
-	glog.V(10).Infof("get network %s Rx bps: %v Bytes/s, Tx bps: %v Bytes/s \n",
+	glog.V(5).Infof("get network %s Rx bps: %v Bytes/s, Tx bps: %v Bytes/s \n",
 		newNetworkStat.name, int(networkRxBps), int(networkTxBps))
 
 	// Compute Disk IOPS
@@ -491,7 +507,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		glog.Errorf("get disk iops error, a negative value, ignore it")
 		diskIOPS = 0
 	}
-	glog.V(10).Infof("get disk %s, iops: %v\n", newDiskIoStat.name, int(diskIOPS))
+	glog.V(5).Infof("get disk %s, iops: %v\n", newDiskIoStat.name, int(diskIOPS))
 
 	if diskIOPS > float64(c.diskIoTotal) * c.taintThreshold["DiskIo"] {
 			glog.Infof("disk %s out of limits, iops: %v", newDiskIoStat.name, int(diskIOPS))
