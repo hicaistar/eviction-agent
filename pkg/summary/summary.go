@@ -9,11 +9,10 @@ import (
 	"io/ioutil"
 	"encoding/json"
 
-	"github.com/golang/glog"
-
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
+	"eviction-agent/pkg/log"
 )
 
 type NodeInfo struct {
@@ -63,7 +62,7 @@ func (kc *kubeletClient) GetSummaryStats() (*ConditionStats, error) {
 func (kc *kubeletClient) collect() error {
 	summary, err := kc.getSummary()
 	if err != nil {
-		glog.Errorf("get summary error: %v\n", err)
+		log.Errorf("get summary error: %v", err)
 		return err
 	}
 	if summary.Node.Network == nil || summary.Node.Diskio == nil ||
@@ -101,8 +100,7 @@ func (kc *kubeletClient) makeRequestAndGetValue(client *http.Client, req *http.R
 	if req.URL != nil {
 		kubeletAddr = req.URL.Host
 	}
-	glog.V(10).Infof("Raw response from Kubelet at %s: %s", kubeletAddr, string(body))
-	//glog.Infof("Raw response from kubelet at %s: %s", kubeletAddr, string(body))
+	log.Debugf("Raw response from Kubelet at %s: %s", kubeletAddr, string(body))
 
 	err = json.Unmarshal(body, value)
 	if err != nil {

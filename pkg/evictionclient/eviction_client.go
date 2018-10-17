@@ -3,8 +3,6 @@ package evictionclient
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/golang/glog"
-
 	"k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +15,7 @@ import (
 	"eviction-agent/cmd/options"
 	"eviction-agent/pkg/summary"
 	"eviction-agent/pkg/types"
+	"eviction-agent/pkg/log"
 	"strconv"
 )
 
@@ -59,13 +58,13 @@ func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
 		if err != nil {
 			panic(err)
 		}
-		glog.Infof("Create client using kubeconfig file %s", kubeconfigFile)
+		log.Infof("Create client using kubeconfig file %s", kubeconfigFile)
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
 			panic(err)
 		}
-		glog.Infof("Create client using in-cluster config")
+		log.Infof("Create client using in-cluster config")
 	}
 
 	clientSet, err := kubernetes.NewForConfig(config)
@@ -78,13 +77,13 @@ func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
 
 	ipAddr, err := c.getNodeAddress()
 	if err != nil {
-		glog.Errorf("%v", err)
+		log.Errorf("%v", err)
 		panic(err)
 	}
 
 	transport, err := rest.TransportFor(config)
 	if err != nil {
-		glog.Errorf("get transport error: %v", err)
+		log.Errorf("get transport error: %v", err)
 		panic(err)
 	}
 
@@ -103,22 +102,22 @@ func NewClientOrDie(eao *options.EvictionAgentOptions) Client {
 func (c *evictionClient) getNodeAddress() (string, error) {
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
-		glog.Errorf("get node taint condition error %v", err)
+		log.Errorf("get node taint condition error %v", err)
 		return "", err
 	}
 	for _, addr := range node.Status.Addresses {
 		if addr.Type == v1.NodeInternalIP {
-			glog.Infof("Get node ip address: %v", addr.Address)
+			log.Infof("Get node ip address: %v", addr.Address)
 			return addr.Address, nil
 		}
 	}
-	return "", fmt.Errorf("node had no addresses that matched\n")
+	return "", fmt.Errorf("node had no addresses that matched")
 }
 
 func (c evictionClient) GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal, error) {
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
-		glog.Errorf("get node taint condition error %v", err)
+		log.Errorf("get node taint condition error %v", err)
 		return nil, err
 	}
 	nodeIOPSTotal := types.NodeIOPSTotal{}
@@ -168,7 +167,7 @@ func (c *evictionClient) GetTaintConditions() (types.NodeTaintInfo, error) {
 
 	node, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
-		glog.Errorf("get node taint condition error %v", err)
+		log.Errorf("get node taint condition error %v", err)
 		return nodeTaintInfo, err
 	}
 	taints := node.Spec.Taints
@@ -193,7 +192,7 @@ func (c *evictionClient) GetTaintConditions() (types.NodeTaintInfo, error) {
 func (c *evictionClient) SetTaintConditions(taintKey string, action string) error {
 	oldNode, err := c.client.CoreV1().Nodes().Get(c.nodeName, metav1.GetOptions{})
 	if err != nil {
-		glog.Errorf("get node taint condition error %v", err)
+		log.Errorf("get node taint condition error %v", err)
 		return err
 	}
 
@@ -265,7 +264,7 @@ func (c *evictionClient) GetLowerPriorityPods(lowPriorityThreshold int) ([]types
 	}
 	podLists, err := c.client.CoreV1().Pods(metav1.NamespaceAll).List(options)
 	if err != nil {
-		glog.Errorf("List pods on %s error\n", c.nodeName)
+		log.Errorf("List pods on %s error\n", c.nodeName)
 		return nil, err
 	}
 	for _, pod := range podLists.Items {
@@ -285,7 +284,7 @@ func (c *evictionClient) GetLowerPriorityPods(lowPriorityThreshold int) ([]types
 				Priority:  priority,
 			}
 			pods = append(pods, newPod)
-			glog.Infof("Get low priority pod: %v priority: %v", pod.Name, priority)
+			log.Infof("Get low priority pod: %v priority: %v", pod.Name, priority)
 		}
 	}
 	return pods, nil
@@ -298,7 +297,7 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	}
 	oldPod, err := c.client.CoreV1().Pods(podInfo.Namespace).Get(podInfo.Name, metav1.GetOptions{})
 	if err != nil {
-		glog.Errorf("get pod %s error", podInfo.Name)
+		log.Errorf("get pod %s error", podInfo.Name)
 		return err
 	}
 	oldData, err := json.Marshal(oldPod)
@@ -308,7 +307,7 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	newPod := oldPod.DeepCopy()
 
 	if newPod.Annotations == nil {
-		glog.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
+		log.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
 		newPod.Annotations = make(map[string]string)
 	}
 	if action == "Add" {
@@ -328,7 +327,7 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	}
 	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name, k8stypes.StrategicMergePatchType, patchBytes)
 
-	glog.Infof("Annotate pod: %v, action:%v", podInfo.Name, action)
+	log.Infof("Annotate pod: %v, action:%v", podInfo.Name, action)
 	return err
 }
 
@@ -339,7 +338,7 @@ func (c *evictionClient) ClearAllEvictAnnotations() error {
 	}
 	podLists, err := c.client.CoreV1().Pods(metav1.NamespaceAll).List(options)
 	if err != nil {
-		glog.Errorf("List pods on %s error\n", c.nodeName)
+		log.Errorf("List pods on %s error", c.nodeName)
 		return err
 	}
 

@@ -3,11 +3,10 @@ package evictionmanager
 import (
 	"time"
 
-	"github.com/golang/glog"
-
 	"eviction-agent/pkg/types"
 	"eviction-agent/pkg/evictionclient"
 	"eviction-agent/pkg/condition"
+	"eviction-agent/pkg/log"
 )
 
 const (
@@ -63,7 +62,7 @@ func (e *evictionManager) Run() error {
 		// wait for evict event
 		select {
 		case evictType := <-e.evictChan:
-			glog.Infof("evict pod because %s is not available", evictType)
+			log.Infof("evict pod because %s is not available", evictType)
 		    e.evictOnePod(evictType)
 		}
 	}
@@ -74,17 +73,17 @@ func (e *evictionManager) Run() error {
 func (e *evictionManager) evictOnePod(evictType string) {
 	podToEvict, isEvict, priority, err:= e.conditionManager.ChooseOnePodToEvict(evictType)
 	if err != nil {
-		glog.Errorf("evictOnePod choose one pod to evict error: %v", err)
+		log.Errorf("evictOnePod choose one pod to evict error: %v", err)
 		return
 	}
-	glog.Infof("Get pod: %v to evict.\n", podToEvict.Name)
+	log.Infof("Get pod: %v to evict.\n", podToEvict.Name)
 
 	if isEvict {
 		err = e.client.EvictOnePod(podToEvict)
 	} else {
 		err = e.client.AnnotatePod(podToEvict, priority, "Add")
 	}
-	glog.Errorf("Evict pod error: %v", err)
+	log.Errorf("Evict pod error: %v", err)
 	return
 }
 
@@ -98,7 +97,7 @@ func (e *evictionManager) taintProcess() {
 		// get taint condition
 		e.nodeTaint, err = e.client.GetTaintConditions()
 		if err != nil {
-			glog.Errorf("get taint condition error: %v\n", err)
+			log.Errorf("get taint condition error: %v", err)
 			continue
 		}
 
@@ -123,12 +122,12 @@ func (e *evictionManager) taintProcess() {
 				// node is tainted CPU busy
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintCPUTime)
-				glog.Infof("last taint duration: %v\n", duration)
+				log.Infof("last taint duration: %v", duration)
 				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.CPUBusy, "UnTaint")
-					glog.Infof("Untaint node %s", types.CPUBusy)
+					log.Infof("Untaint node %s", types.CPUBusy)
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.CPUBusy, err)
+						log.Errorf("untaint node %s error: %v", types.CPUBusy, err)
 					}
 					// TODO: clear annotations
 				}
@@ -139,10 +138,10 @@ func (e *evictionManager) taintProcess() {
 			e.lastTaintCPUTime = time.Now()
 			if !e.nodeTaint.CPU {
 				// taint node, evict pod
-				glog.Infof("taint node %s ", types.CPUBusy)
+				log.Infof("taint node %s ", types.CPUBusy)
 				err = e.client.SetTaintConditions(types.CPUBusy, "Taint")
 				if err != nil {
-					glog.Errorf("add taint %s error: %v", types.CPUBusy, err)
+					log.Errorf("add taint %s error: %v", types.CPUBusy, err)
 				}
 			}
 			// evict one pod to reclaim resources
@@ -158,12 +157,12 @@ func (e *evictionManager) taintProcess() {
 				// node is tainted Memory busy
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintMemTime)
-				glog.Infof("last taint duration: %v\n", duration)
+				log.Infof("last taint duration: %v\n", duration)
 				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.MemBusy, "UnTaint")
-					glog.Infof("Untaint node %s", types.MemBusy)
+					log.Infof("Untaint node %s", types.MemBusy)
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.MemBusy, err)
+						log.Errorf("untaint node %s error: %v", types.MemBusy, err)
 					}
 					// TODO: clear annotations
 				}
@@ -174,10 +173,10 @@ func (e *evictionManager) taintProcess() {
 			e.lastTaintMemTime = time.Now()
 			if !e.nodeTaint.Memory {
 				// taint node, evict pod
-				glog.Infof("taint node %s ", types.MemBusy)
+				log.Infof("taint node %s ", types.MemBusy)
 				err = e.client.SetTaintConditions(types.MemBusy, "Taint")
 				if err != nil {
-					glog.Errorf("add taint %s error: %v", types.MemBusy, err)
+					log.Errorf("add taint %s error: %v", types.MemBusy, err)
 				}
 			}
 			// evict one pod to reclaim resources
@@ -193,12 +192,12 @@ func (e *evictionManager) taintProcess() {
 				// node is tainted DiskIO busy
 				// TODO: wait taintGraceTime
 				duration := time.Now().Sub(e.lastTaintDiskIOTime)
-				glog.Infof("last taint duration: %v\n", duration)
+				log.Infof("last taint duration: %v", duration)
 				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.DiskIO, "UnTaint")
-					glog.Infof("Untaint node %s", types.DiskIO)
+					log.Infof("Untaint node %s", types.DiskIO)
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.DiskIO, err)
+						log.Errorf("untaint node %s error: %v", types.DiskIO, err)
 					}
 					// TODO: clear annotations
 				}
@@ -209,10 +208,10 @@ func (e *evictionManager) taintProcess() {
 			e.lastTaintDiskIOTime = time.Now()
 			if !e.nodeTaint.DiskIO {
 				// taint node, evict pod
-				glog.Infof("taint node %s ", types.DiskIO)
+				log.Infof("taint node %s ", types.DiskIO)
 				err = e.client.SetTaintConditions(types.DiskIO, "Taint")
 				if err != nil {
-					glog.Errorf("add taint %s error: %v", types.DiskIO, err)
+					log.Errorf("add taint %s error: %v", types.DiskIO, err)
 				}
 			}
 			// evict one pod to reclaim resources
@@ -226,25 +225,25 @@ func (e *evictionManager) taintProcess() {
 		if condition.NetworkRxAvailabel && condition.NetworkTxAvailabel {
 			if e.nodeTaint.NetworkIO {
 				duration := time.Now().Sub(e.lastTaintNetIOTime)
-				glog.Infof("last taint duration: %v\n", duration)
+				log.Infof("last taint duration: %v", duration)
 				if duration.Minutes() > unTaintPeriod.Minutes() {
 					err = e.client.SetTaintConditions(types.NetworkIO, "UnTaint")
 					if err != nil {
-						glog.Errorf("untaint node %s error: %v\n", types.NetworkIO, err)
+						log.Errorf("untaint node %s error: %v", types.NetworkIO, err)
 					}
 					// TODO: clear annotations
-					glog.Infof("untaint node %s\n", types.NetworkIO)
+					log.Infof("untaint node %s", types.NetworkIO)
 				}
 			}
 		} else {
 			// node is in NetworkIO busy
 			e.lastTaintNetIOTime = time.Now()
 			if !e.nodeTaint.NetworkIO {
-				glog.Infof("taint node %s unavailable", types.NetworkIO)
+				log.Infof("taint node %s unavailable", types.NetworkIO)
 				// taint node, evict pod
 				err = e.client.SetTaintConditions(types.NetworkIO, "Taint")
 				if err != nil {
-					glog.Errorf("add taint %s error: %v", types.NetworkIO, err)
+					log.Errorf("add taint %s error: %v", types.NetworkIO, err)
 				}
 			}
 			// evict one pod to reclaim resources
