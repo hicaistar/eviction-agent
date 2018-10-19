@@ -31,12 +31,12 @@ type Client interface {
 	EvictOnePod(*types.PodInfo) error
 	// GetLowerPriorityPods
 	GetLowerPriorityPods(int) ([]types.PodInfo, error)
-	// AddEvictAnnotationToPod
-	AnnotatePod(podInfo *types.PodInfo, priority string, action string) error
+	// LabelPod
+	LabelPod(podInfo *types.PodInfo, priority string, action string) error
 	// GetIOPSTotalFromAnnotations
 	GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal, error)
-	//ClearAllEvictAnnotations
-	ClearAllEvictAnnotations() error
+	//ClearAllEvictLabels
+	ClearAllEvictLabels() error
 }
 
 type evictionClient struct {
@@ -125,18 +125,18 @@ func (c evictionClient) GetResourcesTotalFromAnnotations() (*types.NodeIOPSTotal
 	annotations := node.Annotations
 	for key, value := range annotations {
 		if key == types.NodeDiskIOPSTotal {
-			v, err := strconv.ParseInt(value, 10, 32)
+			v, err := strconv.ParseUint(value, 10, 64)
 			if err != nil {
 				return nil, err
 			}
-			nodeIOPSTotal.DiskIOPSTotal = int32(v)
+			nodeIOPSTotal.DiskIOPSTotal = int64(v)
 		}
 		if key == types.NodeNetworkBPSTotal {
-			v, err := strconv.ParseInt(value, 10, 32)
+			v, err := strconv.ParseUint(value, 10, 64)
 			if err != nil {
 				return nil, err
 			}
-			nodeIOPSTotal.NetworkBPSTotal = int32(v)
+			nodeIOPSTotal.NetworkBPSTotal = int64(v)
 		}
 	}
 	// Get CPU and Memory form node status
@@ -290,8 +290,8 @@ func (c *evictionClient) GetLowerPriorityPods(lowPriorityThreshold int) ([]types
 	return pods, nil
 }
 
-// AddEvictAnnotationToPod add an evict annotation on pod
-func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, action string) error {
+// LabelPod add an evict label on pod
+func (c *evictionClient) LabelPod(podInfo *types.PodInfo, priority string, action string) error {
 	if podInfo.Name == "" {
 		return fmt.Errorf("pod name should not be empty")
 	}
@@ -306,14 +306,14 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	}
 	newPod := oldPod.DeepCopy()
 
-	if newPod.Annotations == nil {
-		log.Infof("there is no annotation on this pod: %v, create it", podInfo.Name)
-		newPod.Annotations = make(map[string]string)
+	if newPod.Labels == nil {
+		log.Infof("there is no label on this pod: %v, create it", podInfo.Name)
+		newPod.Labels = make(map[string]string)
 	}
 	if action == "Add" {
-		newPod.Annotations[priority] = "true"
+		newPod.Labels[priority] = "true"
 	} else if action == "Delete" {
-		delete(newPod.Annotations, priority)
+		delete(newPod.Labels, priority)
 	}
 
 	newData, err := json.Marshal(newPod)
@@ -327,12 +327,12 @@ func (c *evictionClient) AnnotatePod(podInfo *types.PodInfo, priority string, ac
 	}
 	_, err = c.client.CoreV1().Pods(oldPod.Namespace).Patch(oldPod.Name, k8stypes.StrategicMergePatchType, patchBytes)
 
-	log.Infof("Annotate pod: %v, action:%v", podInfo.Name, action)
+	log.Infof("Label pod: %v, action:%v", podInfo.Name, action)
 	return err
 }
 
-// ClearAllEvictAnnotations clear evict annotations from pod if node is not in bad condition
-func (c *evictionClient) ClearAllEvictAnnotations() error {
+// ClearAllEvictLabels clear evict labels from pod if node is not in bad condition
+func (c *evictionClient) ClearAllEvictLabels() error {
 	options := metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", c.nodeName),
 	}
@@ -343,16 +343,16 @@ func (c *evictionClient) ClearAllEvictAnnotations() error {
 	}
 
 	for _, pod := range podLists.Items {
-		for k := range pod.Annotations {
+		for k := range pod.Labels {
 			podInfo := types.PodInfo{
 				Name:      pod.Name,
 				Namespace: pod.Namespace,
 			}
 			if k == types.EvictCandidate {
-				c.AnnotatePod(&podInfo, k, "Delete")
+				c.LabelPod(&podInfo, k, "Delete")
 			}
 			if k == types.NeedEvict {
-				c.AnnotatePod(&podInfo, k, "Delete")
+				c.LabelPod(&podInfo, k, "Delete")
 			}
 		}
 	}

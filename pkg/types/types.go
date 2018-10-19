@@ -14,8 +14,8 @@ type NodeTaintInfo struct {
 }
 
 type NodeIOPSTotal struct {
-	DiskIOPSTotal    int32
-	NetworkBPSTotal  int32
+	DiskIOPSTotal    int64
+	NetworkBPSTotal  int64
 	CPUTotal         int64
 	MemoryTotal      int64
 }

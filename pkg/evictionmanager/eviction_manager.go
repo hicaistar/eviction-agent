@@ -11,7 +11,7 @@ import (
 
 const (
 	// updatePeriod is the period
-	taintUpdatePeriod = 30 * time.Second
+	taintUpdatePeriod = 10 * time.Second
 )
 
 type EvictionManager interface {
@@ -81,9 +81,9 @@ func (e *evictionManager) evictOnePod(evictType string) {
 	if isEvict {
 		err = e.client.EvictOnePod(podToEvict)
 	} else {
-		err = e.client.AnnotatePod(podToEvict, priority, "Add")
+		err = e.client.LabelPod(podToEvict, priority, "Add")
 	}
-	log.Errorf("Evict pod error: %v", err)
+	log.Infof("Evict pod : %v", err)
 	return
 }
 
@@ -111,7 +111,7 @@ func (e *evictionManager) taintProcess() {
 			// node is in good condition, there is no need to taint or un-taint
 			// there is no need to evict any pod either
 			// only need to clear all annotations on pods
-			e.client.ClearAllEvictAnnotations()
+			e.client.ClearAllEvictLabels()
 			continue
 		}
 

@@ -80,8 +80,8 @@ type conditionManager struct {
 	autoEvict            bool
 	networkInterfaces    []string
 	diskDevName          string
-	diskIoTotal          int32
-	networkIoTotal       int32
+	diskIoTotal          int64
+	networkIoTotal       int64
 	invalidEvictCount    int32
 	cpuTotal             int64
 	memTotal             int64
@@ -94,9 +94,9 @@ type policyConfig struct {
 	AutoEvictFlag        bool                `json:"autoEvictFlag"`
 	//Resource total
 	NetworkInterfaces    []string            `json:"networkInterfaces"`
-	NetworkBPSTotal      int32               `json:"networkBPSTotal"`
+	NetworkBPSTotal      int64               `json:"networkBPSTotal"`
 	DiskDevName          string              `json:"diskDevName"`
-	DiskIOPSTotal        int32               `json:"diskIOPSTotal"`
+	DiskIOPSTotal        int64               `json:"diskIOPSTotal"`
 	LowPriorityThreshold int                 `json:"lowPriorityThreshold"`
 }
 
@@ -316,7 +316,7 @@ func (c *conditionManager) syncStats() {
 						if c.diskDevName != "" {
 							// care about the specified name
 							diskStats.name = c.diskDevName
-							diskStats.time = pod.Diskio.Time.Time
+							diskStats.time = container.Diskio.Time.Time
 							for _, io := range ioServiced {
 								if io.Device == c.diskDevName {
 									if v, ok := io.Stats["Read"]; ok {
@@ -329,7 +329,7 @@ func (c *conditionManager) syncStats() {
 							}
 						} else if len(ioServiced) != 0 {
 							// choose the first one
-							diskStats.time = pod.Diskio.Time.Time
+							diskStats.time = container.Diskio.Time.Time
 							diskStats.name = ioServiced[0].Device
 							if v, ok := ioServiced[0].Stats["Read"]; ok {
 								diskStats.rx += v
@@ -415,14 +415,6 @@ func (c *conditionManager) syncStats() {
 			newNodeStats.diskIOStats.tx += pod.diskIOStats.tx
 		}
 
-		log.Debugf("get summary stats from node: %v", stats.NodeName)
-		log.Debugf("netName: %v, netRX: %v, netTX: %v at %v, diskName: %v, diskRead: %v, diskWrite: %v at %v",
-			netStats.Name, *netStats.RxPackets, *netStats.TxPackets, netStats.Time.Time,
-			newNodeStats.diskIOStats.name, newNodeStats.diskIOStats.rx,
-			newNodeStats.diskIOStats.tx, newNodeStats.diskIOStats.time)
-		log.Debugf("diskname: %v, Read: %v, Write: %v",
-			newNodeStats.diskIOStats.name, newNodeStats.diskIOStats.rx, newNodeStats.diskIOStats.tx)
-
 		// add new node stats to list
 		if len(c.nodeStats) == statsBufferLen {
 			// If get the same time, ignore it.
@@ -459,7 +451,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 	} else {
 		c.nodeCondition.MemoryAvailable = false
 	}
-	log.Debugf("Get CPU: %v, Memory: %v", newStats.cpuUsage, newStats.memoryUsage)
+	log.Infof("Get CPU: %v, Memory: %v", newStats.cpuUsage, newStats.memoryUsage)
 	// Compute Network IOPS. IOPS = (newIO - lastIO) / duration_time
 	newNetworkStat := statType{
 		time: newStats.netIOStats.time,
@@ -485,7 +477,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		log.Errorf("get network iops error, a negative value, ignore it")
 		networkTxBps = 0
 	}
-	log.Debugf("get network %s Rx bps: %v Bytes/s, Tx bps: %v Bytes/s ",
+	log.Infof("get network %s Rx bps: %v Bytes/s, Tx bps: %v Bytes/s ",
 		newNetworkStat.name, int(networkRxBps), int(networkTxBps))
 
 	// Compute Disk IOPS
@@ -507,7 +499,7 @@ func (c *conditionManager) GetNodeCondition() (*NodeCondition) {
 		log.Errorf("get disk iops error, a negative value, ignore it")
 		diskIOPS = 0
 	}
-	log.Debugf("get disk %s, iops: %v", newDiskIoStat.name, int(diskIOPS))
+	log.Infof("get disk %s, iops: %v", newDiskIoStat.name, int(diskIOPS))
 
 	if diskIOPS > float64(c.diskIoTotal) * c.taintThreshold["DiskIo"] {
 			log.Infof("disk %s out of limits, iops: %v", newDiskIoStat.name, int(diskIOPS))

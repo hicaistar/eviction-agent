@@ -19,9 +19,8 @@ func main() {
 	eao.SetNodeNameOrDie()
 	eao.SetPolicyConfigFileOrDie()
 	eao.SetLogDirOrDie()
-	log.Config("info", eao.LogDir,false,1 * 1024 * 1024,5)
+	log.Config("info", eao.LogDir, false, 1*1024*1024, 5)
 
-	flag.Set("log_dir", eao.LogDir)
 	flag.Parse()
 
 	log.Infof("Start to run eviction agent on %v...", eao.NodeName)
